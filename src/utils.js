@@ -2,7 +2,6 @@
 
 const os = require('os');
 const config = require('./config');
-const { closeConnections } = require('./signalingService'); // Note: This creates a circular dependency, but it's acceptable for this shutdown logic.
 
 // --- Logging ---
 function log(level, message, meta = {}) {
@@ -51,13 +50,14 @@ function getLocalIpForDisplay() {
 
 
 // --- Graceful Shutdown ---
-function setupGracefulShutdown(server) {
+function setupGracefulShutdown(server, closeWsConnectionsCallback) { // <-- Accept a callback
     const shutdown = () => {
         log('info', 'Initiating graceful shutdown...');
 
-        // This is imported from signalingService to close WebSocket connections
-        // If you dislike circular dependencies, you could use an event emitter pattern instead.
-        require('./signalingService').closeConnections();
+        // Use the provided callback function instead of requiring the module
+        if (typeof closeWsConnectionsCallback === 'function') {
+            closeWsConnectionsCallback();
+        }
 
         server.close(() => {
             log('info', 'HTTP server closed.');
