@@ -1,22 +1,27 @@
 // --- src/config.js ---
 
-// Whitelist of allowed origins for WebSocket connections in production
-export const allowedOrigins = new Set([
-    'https://dropsilk.xyz',
-    'https://www.dropsilk.xyz',
-    'https://dropsilk.vercel.app',
-]);
+const config = {
+    PORT: process.env.PORT || 8080,
+    NODE_ENV: process.env.NODE_ENV || 'development',
 
-// Environment variables and constants
-export const PORT = process.env.PORT || 8080;
-export const NODE_ENV = process.env.NODE_ENV || 'development';
-export const SERVER_IP = '0.0.0.0'; // Listen on all available network interfaces
+    ALLOWED_ORIGINS: new Set([
+        'https://dropsilk.xyz',
+        'https://www.dropsilk.xyz',
+        'https://dropsilk.vercel.app',
+    ]),
 
-// Shared in-memory statistics store
-export const connectionStats = {
-    totalConnections: 0,
-    totalDisconnections: 0,
-    totalFlightsCreated: 0,
-    totalFlightsJoined: 0,
-    startTime: Date.now()
+    MAX_PAYLOAD: 1024 * 1024,
+    HEALTH_CHECK_INTERVAL: 30000,
+    SHUTDOWN_TIMEOUT: 10000,
+
+    // --- NEW CONFIGURATION ---
+    // A secret key required to access the /logs endpoint.
+    // IMPORTANT: Change this in production using an environment variable!
+    LOG_ACCESS_KEY: process.env.LOG_ACCESS_KEY || 'change-this-secret-key-in-production',
+
+    // The maximum number of log lines to keep in the in-memory buffer.
+    MAX_LOG_BUFFER_SIZE: 1000,
+    // --- END OF NEW CONFIGURATION ---
 };
+
+module.exports = config;
