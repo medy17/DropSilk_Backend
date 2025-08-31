@@ -1,4 +1,5 @@
 // --- server.js (Main Entry Point) ---
+// node server.js --allow-local-port=[port-number] for dev server
 
 const { server, startServer } = require('./src/httpServer');
 // Import both initialize and closeConnections from the service

@@ -2,7 +2,7 @@
 
 const WebSocket = require("ws");
 const config = require('./config');
-const state = require('./state'); // The magic of dependency injection!
+const state = require('./state');
 const { log, getClientIp, isPrivateIP } = require('./utils');
 
 let wss; // Will be initialized
@@ -32,6 +32,7 @@ function initializeSignaling(server) {
 function verifyClient(info, done) {
     const origin = info.req.headers.origin;
 
+    // In production, we are strict about the allowed origins.
     if (config.NODE_ENV === 'production') {
         if (config.ALLOWED_ORIGINS.has(origin)) {
             done(true);
@@ -42,8 +43,9 @@ function verifyClient(info, done) {
         return;
     }
 
-    // Development mode allows localhost, etc.
-    if (config.ALLOWED_ORIGINS.has(origin) || (origin && (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:'))) || !origin) {
+    // In development, we are more lenient to allow local testing.
+    // The !origin check allows WebSocket clients (like Postman) to connect.
+    if (config.ALLOWED_ORIGINS.has(origin) || !origin) {
         done(true);
     } else {
         log('warn', 'Client connection rejected due to invalid origin (development)', { origin });
@@ -53,7 +55,6 @@ function verifyClient(info, done) {
 
 
 function handleConnection(ws, req) {
-    // Connection setup and event listeners
     const clientId = Math.random().toString(36).substr(2, 9);
     const cleanRemoteIp = getClientIp(req);
 
@@ -115,23 +116,25 @@ function handleMessage(ws, message) {
                     return;
                 }
                 meta.name = data.name.trim();
-                state.clients.set(ws, meta); // Use state.clients
+                state.clients.set(ws, meta);
                 log('info', 'Client registered details', { clientId: meta.id, newName: meta.name });
                 broadcastUsersOnSameNetwork();
                 break;
+
             case "create-flight":
                 if (meta.flightCode) {
                     ws.send(JSON.stringify({ type: "error", message: "Already in a flight" }));
                     return;
                 }
                 const flightCode = Math.random().toString(36).substr(2, 6).toUpperCase();
-                state.flights[flightCode] = [ws]; // <-- THE FIX
+                state.flights[flightCode] = [ws];
                 meta.flightCode = flightCode;
                 state.connectionStats.totalFlightsCreated++;
                 log('info', 'Flight created', { flightCode, creatorId: meta.id });
                 ws.send(JSON.stringify({ type: "flight-created", flightCode }));
                 broadcastUsersOnSameNetwork();
                 break;
+
             case "join-flight":
                 if (!data.flightCode || typeof data.flightCode !== 'string' || data.flightCode.length !== 6) {
                     ws.send(JSON.stringify({ type: "error", message: "Invalid flight code" }));
@@ -141,44 +144,75 @@ function handleMessage(ws, message) {
                     ws.send(JSON.stringify({ type: "error", message: "Already in a flight" }));
                     return;
                 }
-                const flight = state.flights[data.flightCode]; // <-- THE FIX
+                const flight = state.flights[data.flightCode];
                 if (!flight || flight.length >= 2) {
                     ws.send(JSON.stringify({ type: "error", message: "Flight not found or full" }));
                     return;
                 }
+
                 const creatorWs = flight[0];
-                const creatorMeta = state.clients.get(creatorWs); // <-- THE FIX
+                const creatorMeta = state.clients.get(creatorWs);
+                const joinerMeta = meta; // For clarity
+
                 if (!creatorMeta || creatorWs.readyState !== WebSocket.OPEN) {
-                    delete state.flights[data.flightCode]; // <-- THE FIX
+                    delete state.flights[data.flightCode];
                     ws.send(JSON.stringify({ type: "error", message: "Flight creator disconnected" }));
                     return;
                 }
-                // ... (LAN/WAN detection logic is fine)
+
+                // --- START: RESTORED LAN/WAN DETECTION LOGIC ---
+                let connectionType = 'wan';
+
+                // Primary check: If their public IPs match, it's a LAN connection.
+                // This works for deployed servers behind a reverse proxy.
+                if (creatorMeta.remoteIp === joinerMeta.remoteIp) {
+                    connectionType = 'lan';
+                }
+                    // Secondary check: For local development where public IPs might differ,
+                // check if they are on the same private subnet.
+                else if (isPrivateIP(creatorMeta.remoteIp) && isPrivateIP(joinerMeta.remoteIp) && creatorMeta.remoteIp.split('.').slice(0, 3).join('.') === joinerMeta.remoteIp.split('.').slice(0, 3).join('.')) {
+                    connectionType = 'lan';
+                }
+
+                log('info', 'Determined connection type', {
+                    flightCode: data.flightCode,
+                    type: connectionType.toUpperCase(),
+                    creatorIp: creatorMeta.remoteIp,
+                    joinerIp: joinerMeta.remoteIp
+                });
+                // --- END: RESTORED LOGIC ---
+
                 flight.push(ws);
                 meta.flightCode = data.flightCode;
                 state.connectionStats.totalFlightsJoined++;
                 log('info', 'Flight joined', { flightCode: data.flightCode, joinerId: meta.id });
-                ws.send(JSON.stringify({ type: "peer-joined", flightCode: data.flightCode, peer: { id: creatorMeta.id, name: creatorMeta.name } }));
-                creatorWs.send(JSON.stringify({ type: "peer-joined", flightCode: data.flightCode, peer: { id: meta.id, name: meta.name } }));
+
+                // Send the connectionType to BOTH peers.
+                ws.send(JSON.stringify({ type: "peer-joined", flightCode: data.flightCode, peer: { id: creatorMeta.id, name: creatorMeta.name }, connectionType: connectionType }));
+                creatorWs.send(JSON.stringify({ type: "peer-joined", flightCode: data.flightCode, peer: { id: meta.id, name: meta.name }, connectionType: connectionType }));
+
                 broadcastUsersOnSameNetwork();
                 break;
+
             case "invite-to-flight":
                 if (!data.inviteeId || !data.flightCode) return;
-                for (const [clientWs, clientMeta] of state.clients.entries()) { // <-- THE FIX
+                for (const [clientWs, clientMeta] of state.clients.entries()) {
                     if (clientMeta.id === data.inviteeId && clientWs.readyState === WebSocket.OPEN) {
                         clientWs.send(JSON.stringify({ type: "flight-invitation", flightCode: data.flightCode, fromName: meta.name, }));
                         break;
                     }
                 }
                 break;
+
             case "signal":
-                if (!meta.flightCode || !state.flights[meta.flightCode]) return; // <-- THE FIX
-                state.flights[meta.flightCode].forEach((client) => { // <-- THE FIX
+                if (!meta.flightCode || !state.flights[meta.flightCode]) return;
+                state.flights[meta.flightCode].forEach((client) => {
                     if (client !== ws && client.readyState === WebSocket.OPEN) {
                         client.send(JSON.stringify({ type: "signal", data: data.data }));
                     }
                 });
                 break;
+
             default:
                 ws.send(JSON.stringify({ type: "error", message: "Unknown message type" }));
         }
@@ -217,10 +251,10 @@ function handleDisconnect(ws) {
 function broadcastUsersOnSameNetwork() {
     try {
         const clientsByNetworkGroup = {};
-        for (const [ws, meta] of state.clients.entries()) { // <-- THE FIX
+        for (const [ws, meta] of state.clients.entries()) {
             if (!meta || ws.readyState !== WebSocket.OPEN) continue;
             // Don't show users who are already paired up
-            if (meta.flightCode && state.flights[meta.flightCode] && state.flights[meta.flightCode].length === 2) continue; // <-- THE FIX
+            if (meta.flightCode && state.flights[meta.flightCode] && state.flights[meta.flightCode].length === 2) continue;
 
             // Group by public IP, or by /24 subnet for private IPs
             let groupingKey = isPrivateIP(meta.remoteIp) ? meta.remoteIp.split('.').slice(0, 3).join('.') : meta.remoteIp;
@@ -228,11 +262,11 @@ function broadcastUsersOnSameNetwork() {
             clientsByNetworkGroup[groupingKey].push({ id: meta.id, name: meta.name });
         }
 
-        for (const [ws, meta] of state.clients.entries()) { // <-- THE FIX
+        for (const [ws, meta] of state.clients.entries()) {
             if (!meta || ws.readyState !== WebSocket.OPEN) continue;
 
             // Send an empty list to users who are already paired
-            if (meta.flightCode && state.flights[meta.flightCode] && state.flights[meta.flightCode].length === 2) { // <-- THE FIX
+            if (meta.flightCode && state.flights[meta.flightCode] && state.flights[meta.flightCode].length === 2) {
                 ws.send(JSON.stringify({ type: "users-on-network-update", users: [] }));
                 continue;
             }
@@ -242,7 +276,7 @@ function broadcastUsersOnSameNetwork() {
             ws.send(JSON.stringify({ type: "users-on-network-update", users: usersOnNetwork }));
         }
     } catch (error) {
-        log('error', 'Critical error in broadcastUsersOnSameNetwork', { error: error.message });
+        log('error', 'Critical error in broadcastUsersOnSameNetwork', { error: error.message, stack: error.stack });
     }
 }
 
