@@ -48,7 +48,6 @@ async function getUtRequestHandler() {
              * in production, solving the webhook problem.
              */
             callbackUrl: callbackUrl,
-            logLevel: "debug",
         },
     });
 
