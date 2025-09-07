@@ -100,7 +100,7 @@ function setCors(res, origin) {
     res.setHeader(
         "Access-Control-Allow-Headers",
         // Add the missing header to the list
-        "content-type,authorization,x-uploadthing-version,x-uploadthing-language,x-uploadthing-package"
+        "content-type,authorization,x-uploadthing-version,x-uploadthing-language,x-uploadthing-package,traceparent"
     );
     res.setHeader("Access-Control-Max-Age", "86400"); // Typo fixed: Access-Control-Max-Age
 }
