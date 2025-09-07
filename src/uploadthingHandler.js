@@ -15,6 +15,18 @@ async function getUtRequestHandler() {
 
     const { createUploadthing, createRouteHandler } = await import("uploadthing/server");
 
+    const tokenForDebug = config.UPLOADTHING_TOKEN;
+    console.log("--- CRITICAL DEBUG: CHECKING UPLOADTHING_TOKEN ---");
+    console.log(`Type of token: ${typeof tokenForDebug}`);
+    console.log(`Token length: ${tokenForDebug.length}`);
+    if (tokenForDebug.length > 10) {
+        console.log(`Token starts with: "${tokenForDebug.substring(0, 5)}..."`);
+        console.log(`Token ends with: "...${tokenForDebug.substring(tokenForDebug.length - 5)}"`);
+    } else {
+        console.log(`Token value is too short or empty: "${tokenForDebug}"`);
+    }
+    console.log("--------------------------------------------------");
+
     const f = createUploadthing();
 
     const router = {
@@ -32,9 +44,6 @@ async function getUtRequestHandler() {
             }),
     };
 
-    // --- START: THE FINAL FIX ---
-    // Use the explicit public URL from your environment variables for production,
-    // and fallback to localhost for local development.
     const callbackUrl = process.env.PUBLIC_SERVER_URL
         ? `${process.env.PUBLIC_SERVER_URL}/api/uploadthing`
         : `http://localhost:${config.PORT}/api/uploadthing`;
@@ -43,16 +52,11 @@ async function getUtRequestHandler() {
         router,
         config: {
             token: config.UPLOADTHING_TOKEN,
-            /**
-             * This now correctly points to https://dropsilk.xyz/api/uploadthing
-             * in production, solving the webhook problem.
-             */
             callbackUrl: callbackUrl,
         },
     });
 
     log("info", "UploadThing handler configured", { callbackUrl: callbackUrl });
-    // --- END: THE FINAL FIX ---
 
     return utRequestHandler;
 }
