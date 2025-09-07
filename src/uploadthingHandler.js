@@ -13,8 +13,7 @@ async function getUtRequestHandler() {
         throw new Error("Missing UPLOADTHING_TOKEN in config.js (from environment variable)");
     }
 
-    const { createUploadthing } = await import("uploadthing/server");
-    const { createRouteHandler } = await import("uploadthing/fetch");
+    const { createUploadthing, createRouteHandler } = await import("uploadthing/server");
 
     const f = createUploadthing();
 
