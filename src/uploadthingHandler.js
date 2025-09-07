@@ -91,18 +91,18 @@ async function sendWebResponse(res, response) {
 }
 
 // --- AFTER THE FIX ---
+// --- THE FINAL, PERMANENT FIX ---
 function setCors(res, origin) {
     if (origin) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Vary", "Origin");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader(
-        "Access-Control-Allow-Headers",
-        // Add the missing header to the list
-        "content-type,authorization,x-uploadthing-version,x-uploadthing-language,x-uploadthing-package,traceparent"
-    );
-    res.setHeader("Access-Control-Max-Age", "86400"); // Typo fixed: Access-Control-Max-Age
+
+    // Allow any headers sent from the trusted origin. This stops the whack-a-mole game.
+    res.setHeader("Access-Control-Allow-Headers", "*");
+
+    res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 async function handleUploadThingRequest(req, res) {
