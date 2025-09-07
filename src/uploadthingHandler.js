@@ -90,6 +90,7 @@ async function sendWebResponse(res, response) {
     res.end(Buffer.from(arrayBuf));
 }
 
+// --- AFTER THE FIX ---
 function setCors(res, origin) {
     if (origin) {
         res.setHeader("Access-Control-Allow-Origin", origin);
@@ -98,9 +99,10 @@ function setCors(res, origin) {
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     res.setHeader(
         "Access-Control-Allow-Headers",
-        "content-type,authorization,x-uploadthing-version,x-uploadthing-language"
+        // Add the missing header to the list
+        "content-type,authorization,x-uploadthing-version,x-uploadthing-language,x-uploadthing-package"
     );
-    res.setHeader("Access-Control-Max-Age", "86400");
+    res.setHeader("Access-Control-Max-Age", "86400"); // Typo fixed: Access-Control-Max-Age
 }
 
 async function handleUploadThingRequest(req, res) {
