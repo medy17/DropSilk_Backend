@@ -7,10 +7,9 @@ let utRequestHandler = null;
 async function getUtRequestHandler() {
     if (utRequestHandler) return utRequestHandler;
 
-    if (!config.UPLOADTHING_APP_ID || !config.UPLOADTHING_SECRET) {
-        throw new Error(
-            "Missing UPLOADTHING_APP_ID or UPLOADTHING_SECRET environment variables"
-        );
+    // Updated check for the new token
+    if (!config.UPLOADTHING_TOKEN) {
+        throw new Error("Missing UPLOADTHING_TOKEN environment variable");
     }
 
     const { createUploadthing } = await import("uploadthing/server");
@@ -32,6 +31,7 @@ async function getUtRequestHandler() {
             }),
     };
 
+    // The handler automatically reads the UPLOADTHING_TOKEN from the environment
     utRequestHandler = createRouteHandler({ router });
     return utRequestHandler;
 }

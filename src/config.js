@@ -50,9 +50,8 @@ const config = {
         process.env.LOG_ACCESS_KEY || "change-this-secret-key-in-production",
     MAX_LOG_BUFFER_SIZE: 1000,
 
-    // --- UploadThing ---
-    UPLOADTHING_APP_ID: process.env.UPLOADTHING_APP_ID || "",
-    UPLOADTHING_SECRET: process.env.UPLOADTHING_SECRET || "",
+    // --- NEW: Use a single UploadThing Token ---
+    UPLOADTHING_TOKEN: process.env.UPLOADTHING_TOKEN || "",
 };
 
 module.exports = config;
