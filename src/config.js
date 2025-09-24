@@ -42,6 +42,12 @@ const config = {
 
     ALLOWED_ORIGINS: ALLOWED_ORIGINS,
 
+    // --- NEW: Add regex for Vercel preview URLs ---
+    // This will match URLs like: https://dropsilk-a1b2c3d-ahmed-arats-projects.vercel.app
+    VERCEL_PREVIEW_ORIGIN_REGEX:
+        /^https:\/\/dropsilk-[a-zA-Z0-9]+-ahmed-arats-projects\.vercel\.app$/,
+
+
     MAX_PAYLOAD: 1024 * 1024,
     HEALTH_CHECK_INTERVAL: 30000,
     SHUTDOWN_TIMEOUT: 10000,

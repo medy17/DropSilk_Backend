@@ -34,7 +34,11 @@ function verifyClient(info, done) {
 
     // In production, we are strict about the allowed origins.
     if (config.NODE_ENV === 'production') {
-        if (config.ALLOWED_ORIGINS.has(origin)) {
+        // --- MODIFIED: Check against the static list OR the dynamic Vercel preview regex ---
+        const isAllowed = config.ALLOWED_ORIGINS.has(origin) ||
+            (origin && config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin));
+
+        if (isAllowed) {
             done(true);
         } else {
             log('warn', 'Client connection rejected due to invalid origin (production)', { origin });
