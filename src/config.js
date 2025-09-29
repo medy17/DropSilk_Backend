@@ -5,6 +5,7 @@ const baseAllowedOrigins = [
     "https://dropsilk.xyz",
     "https://www.dropsilk.xyz",
     "https://dropsilk.vercel.app",
+    "https://logic-lens-spark.lovable.app"
 ];
 
 const ALLOWED_ORIGINS = new Set(baseAllowedOrigins);
