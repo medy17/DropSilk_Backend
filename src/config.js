@@ -5,7 +5,7 @@ const baseAllowedOrigins = [
     "https://dropsilk.xyz",
     "https://www.dropsilk.xyz",
     "https://dropsilk.vercel.app",
-    "https://dropsilk-react.vercel.app/"
+    "https://dropsilk-react.vercel.app"
 ];
 
 const ALLOWED_ORIGINS = new Set(baseAllowedOrigins);
