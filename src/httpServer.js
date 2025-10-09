@@ -2,6 +2,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const config = require("./config");
 const state = require("./state");
@@ -57,13 +58,22 @@ const server = http.createServer((req, res) => {
             res.end(JSON.stringify(stats, null, 2));
             log("info", "Stats endpoint accessed", { ip: clientIp });
         } else if (req.method === "GET" && url.pathname === "/logs") {
-            const providedKey = url.searchParams.get("key");
-            if (providedKey !== config.LOG_ACCESS_KEY) {
-                log("warn", "Unauthorized attempt to access logs", { ip: clientIp });
+            const providedKey = url.searchParams.get("key") || "";
+            const expectedKey = config.LOG_ACCESS_KEY;
+
+            const providedKeyBuffer = Buffer.from(providedKey);
+            const expectedKeyBuffer = Buffer.from(expectedKey);
+
+            if (
+                providedKeyBuffer.length !== expectedKeyBuffer.length ||
+                !crypto.timingSafeEqual(providedKeyBuffer, expectedKeyBuffer)
+            ) {
+                log("warn", "Unauthorized attempt to access logs (key mismatch)", { ip: clientIp });
                 res.writeHead(403, { "Content-Type": "text/plain" });
                 res.end("Forbidden");
                 return;
             }
+
             log("warn", "Log dump endpoint accessed successfully", { ip: clientIp });
             res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
             res.end(state.logs.join("\n"));
