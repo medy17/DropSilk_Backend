@@ -8,7 +8,7 @@
   
   <div>
     <img src="https://img.shields.io/badge/Node.js-^22-339933?style=for-the-badge&logo=node.js" alt="Node.js version"/>
-    <img src="https://img.shields.io/github/license/medy17/DropSilk_Backend?style=for-the-badge" alt="License"/>
+    <img src="https://img.shields.io/github/license/medy17/dropsilk_backend?style=for-the-badge" alt="License"/>
   </div>
 </div>
 
