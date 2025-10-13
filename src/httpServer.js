@@ -9,6 +9,11 @@ const state = require("./state");
 const { log, getClientIp, getLocalIpForDisplay } = require("./utils");
 const { handleUploadThingRequest } = require("./uploadthingHandler");
 
+// --- THIS IS THE FIX ---
+// Use the port Render provides via environment variable.
+// Fall back to your config file's port for local development.
+const PORT_TO_USE = process.env.PORT || config.PORT;
+
 const server = http.createServer((req, res) => {
     try {
         const url = new URL(req.url, `http://${req.headers.host}`);
@@ -23,10 +28,17 @@ const server = http.createServer((req, res) => {
 
         // Favicon
         if (url.pathname === "/favicon.ico") {
-            const faviconPath = path.join(__dirname, "..", "public", "favicon.ico");
+            const faviconPath = path.join(
+                __dirname,
+                "..",
+                "public",
+                "favicon.ico",
+            );
             fs.readFile(faviconPath, (err, data) => {
                 if (err) {
-                    log("warn", "favicon.ico not found", { path: faviconPath });
+                    log("warn", "favicon.ico not found", {
+                        path: faviconPath,
+                    });
                     res.writeHead(404);
                     res.end();
                     return;
@@ -68,14 +80,22 @@ const server = http.createServer((req, res) => {
                 providedKeyBuffer.length !== expectedKeyBuffer.length ||
                 !crypto.timingSafeEqual(providedKeyBuffer, expectedKeyBuffer)
             ) {
-                log("warn", "Unauthorized attempt to access logs (key mismatch)", { ip: clientIp });
+                log(
+                    "warn",
+                    "Unauthorized attempt to access logs (key mismatch)",
+                    { ip: clientIp },
+                );
                 res.writeHead(403, { "Content-Type": "text/plain" });
                 res.end("Forbidden");
                 return;
             }
 
-            log("warn", "Log dump endpoint accessed successfully", { ip: clientIp });
-            res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+            log("warn", "Log dump endpoint accessed successfully", {
+                ip: clientIp,
+            });
+            res.writeHead(200, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
             res.end(state.logs.join("\n"));
         } else {
             res.writeHead(404, { "Content-Type": "text/plain" });
@@ -99,15 +119,17 @@ server.on("error", (error) => {
         code: error.code,
     });
     if (error.code === "EADDRINUSE") {
-        log("error", `Port ${config.PORT} is already in use`);
+        // Use the corrected port variable in the error message
+        log("error", `Port ${PORT_TO_USE} is already in use`);
         process.exit(1);
     }
 });
 
 function startServer() {
-    server.listen(config.PORT, "0.0.0.0", () => {
+    // Use the corrected port variable to listen
+    server.listen(PORT_TO_USE, "0.0.0.0", () => {
         log("info", `🚀 Signalling Server started`, {
-            port: config.PORT,
+            port: PORT_TO_USE,
             environment: config.NODE_ENV,
             localIp: getLocalIpForDisplay(),
         });
