@@ -1,4 +1,8 @@
 // --- server.js (Main Entry Point) ---
+
+// THIS IS THE FIX. IT MUST BE THE VERY FIRST THING YOUR APP DOES.
+require("dotenv").config();
+
 // node server.js --allow-local-port=[port-number] for dev server
 
 const { server, startServer } = require("./src/httpServer");
