@@ -3,6 +3,7 @@
 
 const { log } = require("./utils");
 const config = require("./config");
+const db = require("./dbClient"); // <-- IMPORT OUR DB CLIENT
 
 let utRequestHandler = null;
 
@@ -10,20 +11,32 @@ async function getUtRequestHandler() {
     if (utRequestHandler) return utRequestHandler;
 
     if (!config.UPLOADTHING_TOKEN) {
-        throw new Error("Missing UPLOADTHING_TOKEN in config.js (from environment variable)");
+        throw new Error(
+            "Missing UPLOADTHING_TOKEN in config.js (from environment variable)",
+        );
     }
 
-    const { createUploadthing, createRouteHandler } = await import("uploadthing/server");
+    const { createUploadthing, createRouteHandler } = await import(
+        "uploadthing/server"
+        );
 
     const tokenForDebug = config.UPLOADTHING_TOKEN;
     console.log("--- CRITICAL DEBUG: CHECKING UPLOADTHING_TOKEN ---");
     console.log(`Type of token: ${typeof tokenForDebug}`);
     console.log(`Token length: ${tokenForDebug.length}`);
     if (tokenForDebug.length > 10) {
-        console.log(`Token starts with: "${tokenForDebug.substring(0, 5)}..."`);
-        console.log(`Token ends with: "...${tokenForDebug.substring(tokenForDebug.length - 5)}"`);
+        console.log(
+            `Token starts with: "${tokenForDebug.substring(0, 5)}..."`,
+        );
+        console.log(
+            `Token ends with: "...${tokenForDebug.substring(
+                tokenForDebug.length - 5,
+            )}"`,
+        );
     } else {
-        console.log(`Token value is too short or empty: "${tokenForDebug}"`);
+        console.log(
+            `Token value is too short or empty: "${tokenForDebug}"`,
+        );
     }
     console.log("--------------------------------------------------");
 
@@ -38,8 +51,40 @@ async function getUtRequestHandler() {
                 return { uploadedBy: "dropsilk-preview" };
             })
             .onUploadComplete(async ({ file }) => {
-                // This log message is your proof that the fix is working.
-                log("info", "✅ UploadThing onUploadComplete SUCCESS", { url: file.url });
+                log("info", "✅ UploadThing onUploadComplete SUCCESS", {
+                    url: file.url,
+                });
+
+                // --- NEW DATABASE LOGIC ---
+                try {
+                    const insertQuery = `
+                        INSERT INTO uploaded_files (file_key, file_url, file_name)
+                        VALUES ($1, $2, $3)
+                    `;
+                    // Using parameterized queries ($1, $2) is a MUST to prevent SQL injection.
+                    // The pg library handles sanitizing the inputs for you.
+                    await db.query(insertQuery, [
+                        file.key,
+                        file.url,
+                        file.name,
+                    ]);
+
+                    log("info", "📝 Saved file metadata to database", {
+                        key: file.key,
+                    });
+                } catch (dbError) {
+                    log(
+                        "error",
+                        "🚨 Failed to save file metadata to database",
+                        {
+                            key: file.key,
+                            error: dbError.message,
+                        },
+                    );
+                    // Here you might want to delete the file from UploadThing to prevent orphans
+                }
+                // --- END NEW LOGIC ---
+
                 return { url: file.url };
             }),
     };
@@ -56,11 +101,12 @@ async function getUtRequestHandler() {
         },
     });
 
-    log("info", "UploadThing handler configured", { callbackUrl: callbackUrl });
+    log("info", "UploadThing handler configured", {
+        callbackUrl: callbackUrl,
+    });
 
     return utRequestHandler;
 }
-
 
 async function nodeToWebRequest(req) {
     const url = `http://${req.headers.host}${req.url}`;
