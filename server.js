@@ -1,6 +1,5 @@
 // --- server.js (Main Entry Point) ---
 
-// THIS IS THE FIX. IT MUST BE THE VERY FIRST THING YOUR APP DOES.
 require("dotenv").config();
 
 // node server.js --allow-local-port=[port-number] for dev server
@@ -15,10 +14,14 @@ const { setupGracefulShutdown } = require("./src/utils");
 const { initializeDatabase } = require("./src/dbClient");
 const { startCleanupService } = require("./src/cleanupService");
 
+const argv = require("yargs-parser")(process.argv.slice(2));
+
 // Wrap the startup in an async function to handle promises
 async function startApp() {
-    // 1. Ensure the database is ready
-    await initializeDatabase();
+    // 1. Conditionally initialize the database
+    if (!argv.noDB) {
+        await initializeDatabase();
+    }
 
     // 2. Initialize the WebSocket signaling service and attach it to the HTTP server
     initializeSignaling(server);

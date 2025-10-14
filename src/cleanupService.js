@@ -12,6 +12,12 @@ const utapi = new UTApi();
 const TWENTY_FOUR_HOURS_IN_MS = 24 * 60 * 60 * 1000;
 
 async function runCleanup() {
+    // If the database is not initialized, we can't do anything.
+    if (!db.isDatabaseInitialized()) {
+        log("info", "🧹 DB not initialized, skipping cleanup service run.");
+        return;
+    }
+
     log("info", "🧹 Starting cleanup service run...");
 
     try {

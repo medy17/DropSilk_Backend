@@ -56,32 +56,36 @@ async function getUtRequestHandler() {
                 });
 
                 // --- NEW DATABASE LOGIC ---
-                try {
-                    const insertQuery = `
+                if (db.isDatabaseInitialized()) {
+                    try {
+                        const insertQuery = `
                         INSERT INTO uploaded_files (file_key, file_url, file_name)
                         VALUES ($1, $2, $3)
                     `;
-                    // Using parameterized queries ($1, $2) is a MUST to prevent SQL injection.
-                    // The pg library handles sanitizing the inputs for you.
-                    await db.query(insertQuery, [
-                        file.key,
-                        file.url,
-                        file.name,
-                    ]);
+                        // Using parameterized queries ($1, $2) is a MUST to prevent SQL injection.
+                        // The pg library handles sanitizing the inputs for you.
+                        await db.query(insertQuery, [
+                            file.key,
+                            file.url,
+                            file.name,
+                        ]);
 
-                    log("info", "📝 Saved file metadata to database", {
-                        key: file.key,
-                    });
-                } catch (dbError) {
-                    log(
-                        "error",
-                        "🚨 Failed to save file metadata to database",
-                        {
+                        log("info", "📝 Saved file metadata to database", {
                             key: file.key,
-                            error: dbError.message,
-                        },
-                    );
-                    // Here you might want to delete the file from UploadThing to prevent orphans
+                        });
+                    } catch (dbError) {
+                        log(
+                            "error",
+                            "🚨 Failed to save file metadata to database",
+                            {
+                                key: file.key,
+                                error: dbError.message,
+                            },
+                        );
+                        // Here you might want to delete the file from UploadThing to prevent orphans
+                    }
+                } else {
+                    log("warn", "⚠️ Database not initialized. Skipping DB save for uploaded file.");
                 }
                 // --- END NEW LOGIC ---
 
