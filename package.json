@@ -12,5 +12,8 @@
     "uploadthing": "^7.7.4",
     "ws": "^8.13.0",
     "yargs-parser": "^22.0.0"
+  },
+  "devDependencies": {
+    "clines": "^2.0.2"
   }
 }
