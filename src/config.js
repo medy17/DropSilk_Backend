@@ -1,5 +1,8 @@
 // --- src/config.js ---
 
+const os = require("os");
+const interfaces = os.networkInterfaces();
+
 // --- START: Logic for dynamically adding local origins ---
 const baseAllowedOrigins = [
     "https://dropsilk.xyz",
@@ -28,6 +31,19 @@ process.argv.slice(2).forEach((arg) => {
             );
             console.log(`         - ${localOrigin1}`);
             console.log(`         - ${localOrigin2}`);
+
+            // --- 192.168.x.x origins ---
+            for (const name of Object.keys(interfaces)) {
+                for (const iface of interfaces[name]) {
+                    const { address, family, internal } = iface;
+                    if (family === "IPv4" && !internal && address.startsWith("192.168.")) {
+                        const localOrigin3 = `http://${address}:${port}`;
+                        ALLOWED_ORIGINS.add(localOrigin3);
+                        console.log(`         - ${localOrigin3}`);
+                    }
+                }
+            }
+
         } else {
             console.warn(
                 `[Config] Invalid port number provided with ${localPortArgPrefix}: "${portStr}". Ignoring.`
