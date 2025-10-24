@@ -75,6 +75,10 @@ const config = {
 
     // --- NEW: Use a single UploadThing Token ---
     UPLOADTHING_TOKEN: process.env.UPLOADTHING_TOKEN || "",
+
+    // --- NEW: Cloudflare TURN Server Credentials (keep secret) ---
+    CLOUDFLARE_TURN_TOKEN_ID: process.env.CLOUDFLARE_TURN_TOKEN_ID || "",
+    CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || "",
 };
 
 module.exports = config;

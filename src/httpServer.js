@@ -14,7 +14,19 @@ const { handleUploadThingRequest } = require("./uploadthingHandler");
 // Fall back to your config file's port for local development.
 const PORT_TO_USE = process.env.PORT || config.PORT;
 
-const server = http.createServer((req, res) => {
+// Helper for setting CORS headers for our new TURN endpoint
+function setTurnCors(res, req) {
+    const origin = req.headers.origin;
+    // Only allow origins that are in our explicit list or match the Vercel preview pattern
+    if (origin && (config.ALLOWED_ORIGINS.has(origin) || config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin))) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+    }
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+const server = http.createServer(async (req, res) => {
     try {
         const url = new URL(req.url, `http://${req.headers.host}`);
         const clientIp = getClientIp(req);
@@ -24,6 +36,60 @@ const server = http.createServer((req, res) => {
         // UploadThing endpoint
         if (url.pathname.startsWith("/api/uploadthing")) {
             return handleUploadThingRequest(req, res);
+        }
+
+        // --- NEW: TURN Server Credentials Endpoint ---
+        if (req.method === "OPTIONS" && url.pathname === "/api/turn-credentials") {
+            setTurnCors(res, req);
+            res.writeHead(204);
+            res.end();
+            return;
+        }
+
+        if (req.method === "GET" && url.pathname === "/api/turn-credentials") {
+            setTurnCors(res, req);
+
+            if (!config.CLOUDFLARE_TURN_TOKEN_ID || !config.CLOUDFLARE_API_TOKEN) {
+                log('warn', 'TURN credentials request failed: TURN server not configured on backend.');
+                res.writeHead(501, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "TURN service is not configured on the server." }));
+                return;
+            }
+
+            try {
+                const cloudflareUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${config.CLOUDFLARE_TURN_TOKEN_ID}`;
+                
+                const response = await fetch(cloudflareUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${config.CLOUDFLARE_API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ ttl: 86400 }) // Credentials valid for 24 hours
+                });
+
+                if (!response.ok) {
+                    const errorBody = await response.text();
+                    log('error', 'Failed to get TURN credentials from Cloudflare', { status: response.status, body: errorBody });
+                    throw new Error(`Cloudflare API responded with status ${response.status}`);
+                }
+
+                const data = await response.json();
+                const turnServerConfig = data.iceServers?.find(server => server.username && server.credential);
+
+                if (!turnServerConfig) {
+                    log('error', 'Cloudflare response did not contain valid TURN credentials', { responseData: data });
+                    throw new Error('Invalid response format from Cloudflare');
+                }
+
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ username: turnServerConfig.username, credential: turnServerConfig.credential }));
+            } catch (error) {
+                log('error', 'Error during TURN credential fetch process', { error: error.message, stack: error.stack });
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "Could not fetch TURN credentials." }));
+            }
+            return;
         }
 
         // Favicon
