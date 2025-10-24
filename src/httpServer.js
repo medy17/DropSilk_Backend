@@ -59,14 +59,15 @@ const server = http.createServer(async (req, res) => {
             try {
                 // --- FIX: Use the correct endpoint from the new documentation ---
                 const cloudflareUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${config.CLOUDFLARE_TURN_TOKEN_ID}/credentials/generate-ice-servers`;
-                
+
                 const response = await fetch(cloudflareUrl, {
-                    // --- FIX: Change method to GET as per 405 error ---
-                    // --- FIX: Revert to POST as the new documentation requires it ---
-                    method: 'POST',
+                    method: "POST",
                     headers: {
-                        'Authorization': `Bearer ${config.CLOUDFLARE_API_TOKEN}`,
-                    }
+                        Authorization: `Bearer ${config.CLOUDFLARE_API_TOKEN}`,
+                        "Content-Type": "application/json",
+                    },
+                    // Body may accept options like ttl (seconds). Empty {} is valid.
+                    body: JSON.stringify({ttl: 3600}),
                 });
 
                 if (!response.ok) {
