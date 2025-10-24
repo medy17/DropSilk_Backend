@@ -57,11 +57,13 @@ const server = http.createServer(async (req, res) => {
             }
 
             try {
-                const cloudflareUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${config.CLOUDFLARE_TURN_TOKEN_ID}`;
+                // --- FIX: Use the correct endpoint from the new documentation ---
+                const cloudflareUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${config.CLOUDFLARE_TURN_TOKEN_ID}/credentials/generate-ice-servers`;
                 
                 const response = await fetch(cloudflareUrl, {
                     // --- FIX: Change method to GET as per 405 error ---
-                    method: 'GET', 
+                    // --- FIX: Revert to POST as the new documentation requires it ---
+                    method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${config.CLOUDFLARE_API_TOKEN}`,
                     }
@@ -74,15 +76,15 @@ const server = http.createServer(async (req, res) => {
                 }
 
                 const data = await response.json();
-                const turnServerConfig = data.iceServers?.find(server => server.username && server.credential);
-
-                if (!turnServerConfig) {
+                // The new endpoint returns the full iceServers array directly
+                if (!data.iceServers || !Array.isArray(data.iceServers) || data.iceServers.length === 0) {
                     log('error', 'Cloudflare response did not contain valid TURN credentials', { responseData: data });
                     throw new Error('Invalid response format from Cloudflare');
                 }
 
+                // --- FIX: Send the entire iceServers array to the frontend ---
                 res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ username: turnServerConfig.username, credential: turnServerConfig.credential }));
+                res.end(JSON.stringify(data)); // Send the whole { iceServers: [...] } object
             } catch (error) {
                 log('error', 'Error during TURN credential fetch process', { error: error.message, stack: error.stack });
                 res.writeHead(500, { "Content-Type": "application/json" });
