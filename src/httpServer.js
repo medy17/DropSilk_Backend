@@ -60,12 +60,11 @@ const server = http.createServer(async (req, res) => {
                 const cloudflareUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${config.CLOUDFLARE_TURN_TOKEN_ID}`;
                 
                 const response = await fetch(cloudflareUrl, {
-                    method: 'POST',
+                    // --- FIX: Change method to GET as per 405 error ---
+                    method: 'GET', 
                     headers: {
                         'Authorization': `Bearer ${config.CLOUDFLARE_API_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ ttl: 86400 }) // Credentials valid for 24 hours
+                    }
                 });
 
                 if (!response.ok) {
