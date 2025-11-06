@@ -73,6 +73,13 @@ async function runCleanup() {
 }
 
 function startCleanupService(intervalMinutes = 15) {
+    if (!db.isDatabaseInitialized()) {
+        log(
+            "info",
+            "🧹 Cleanup service disabled (DB not initialised/disabled).",
+        );
+        return;
+    }
     log(
         "info",
         `🕒 Cleanup service scheduled to run every ${intervalMinutes} minutes.`,

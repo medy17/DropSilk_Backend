@@ -10,7 +10,7 @@ const {
     initializeSignaling,
     closeConnections,
 } = require("./src/signalingService");
-const { setupGracefulShutdown } = require("./src/utils");
+const { setupGracefulShutdown, log } = require("./src/utils");
 const { initializeDatabase } = require("./src/dbClient");
 const { startCleanupService } = require("./src/cleanupService");
 
@@ -32,8 +32,15 @@ async function startApp() {
     // 4. Set up listeners for graceful shutdown on SIGINT/SIGTERM
     setupGracefulShutdown(server, closeConnections); // <-- Pass the function here
 
-    // 5. Start the cleanup service to run every 60 minutes
-    startCleanupService(60);
+    // 5. Start the cleanup service to run every 60 minutes (only if DB enabled)
+    if (!argv.noDB) {
+        startCleanupService(60);
+    } else {
+        log(
+            "info",
+            "🧹 Cleanup service disabled via --noDB flag.",
+        );
+    }
 }
 
 startApp().catch((error) => {

@@ -2,6 +2,7 @@
 
 const { Pool } = require("pg");
 const { log } = require("./utils");
+const config = require("./config");
 
 // A connection pool is way better than a single client.
 // It manages multiple connections, so your server doesn't get bogged down
@@ -9,8 +10,14 @@ const { log } = require("./utils");
 let pool;
 let dbInitialized = false;
 
-// Only create a connection pool if the DATABASE_URL is set
-if (process.env.DATABASE_URL) {
+// Honour --noDB / NO_DB
+if (config.NO_DB) {
+    log(
+        "info",
+        "🛑 Database disabled via --noDB/NO_DB. Skipping DB initialisation.",
+    );
+    dbInitialized = false;
+} else if (process.env.DATABASE_URL) {
     try {
         pool = new Pool({
             connectionString: process.env.DATABASE_URL,
@@ -27,11 +34,21 @@ if (process.env.DATABASE_URL) {
         process.exit(1);
     }
 } else {
-    log("warn", "⚠️ DATABASE_URL not set. Database features will be disabled. Server Initialization will proceed but consider running with the --noDB argument if you want to run this server without a DB.");
+    log(
+        "warn",
+        "⚠️ DATABASE_URL not set. Database features will be disabled. Server Initialization will proceed but consider running with the --noDB argument if you want to run this server without a DB.",
+    );
 }
 
 // A simple function to create our table if it doesn't already exist.
 const initializeDatabase = async () => {
+    if (config.NO_DB) {
+        log(
+            "info",
+            "DB disabled via --noDB/NO_DB. Skipping table creation.",
+        );
+        return;
+    }
     if (!dbInitialized) {
         log("warn", "DB not initialized, skipping table creation.");
         return;
@@ -39,12 +56,12 @@ const initializeDatabase = async () => {
 
     const createTableQuery = `
         CREATE TABLE IF NOT EXISTS uploaded_files (
-            id SERIAL PRIMARY KEY,
-            file_key TEXT NOT NULL UNIQUE,
-            file_url TEXT NOT NULL,
-            file_name TEXT NOT NULL,
-            uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
+                                                      id SERIAL PRIMARY KEY,
+                                                      file_key TEXT NOT NULL UNIQUE,
+                                                      file_url TEXT NOT NULL,
+                                                      file_name TEXT NOT NULL,
+                                                      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
     `;
 
     try {
@@ -62,7 +79,7 @@ module.exports = {
     // Export the query function from the pool
     query: (text, params) => {
         if (!dbInitialized) {
-            log("error", "🚨 Database not initialized. Cannot perform query.");
+            log("error", "🚨 Database not initialized/disabled. Cannot perform query.");
             // Throw an error or handle as you see fit
             throw new Error("Database is not available.");
         }

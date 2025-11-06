@@ -3,12 +3,18 @@
 const os = require("os");
 const interfaces = os.networkInterfaces();
 
+// Parse CLI flags once and expose NO_DB in config
+const argv = require("yargs-parser")(process.argv.slice(2));
+const NO_DB =
+    Boolean(argv.noDB) ||
+    ["1", "true"].includes(String(process.env.NO_DB).toLowerCase());
+
 // --- START: Logic for dynamically adding local origins ---
 const baseAllowedOrigins = [
     "https://dropsilk.xyz",
     "https://www.dropsilk.xyz",
     "https://dropsilk.vercel.app",
-    "app://."
+    "app://.",
 ];
 
 const ALLOWED_ORIGINS = new Set(baseAllowedOrigins);
@@ -27,7 +33,7 @@ process.argv.slice(2).forEach((arg) => {
             ALLOWED_ORIGINS.add(localOrigin2);
 
             console.log(
-                `[Config] Development: Dynamically allowing origins for port ${port}:`
+                `[Config] Development: Dynamically allowing origins for port ${port}:`,
             );
             console.log(`         - ${localOrigin1}`);
             console.log(`         - ${localOrigin2}`);
@@ -36,17 +42,20 @@ process.argv.slice(2).forEach((arg) => {
             for (const name of Object.keys(interfaces)) {
                 for (const iface of interfaces[name]) {
                     const { address, family, internal } = iface;
-                    if (family === "IPv4" && !internal && address.startsWith("192.168.")) {
+                    if (
+                        family === "IPv4" &&
+                        !internal &&
+                        address.startsWith("192.168.")
+                    ) {
                         const localOrigin3 = `http://${address}:${port}`;
                         ALLOWED_ORIGINS.add(localOrigin3);
                         console.log(`         - ${localOrigin3}`);
                     }
                 }
             }
-
         } else {
             console.warn(
-                `[Config] Invalid port number provided with ${localPortArgPrefix}: "${portStr}". Ignoring.`
+                `[Config] Invalid port number provided with ${localPortArgPrefix}: "${portStr}". Ignoring.`,
             );
         }
     }
@@ -64,7 +73,6 @@ const config = {
     VERCEL_PREVIEW_ORIGIN_REGEX:
         /^https:\/\/dropsilk-[a-zA-Z0-9]+-ahmed-arats-projects\.vercel\.app$/,
 
-
     MAX_PAYLOAD: 1024 * 1024,
     HEALTH_CHECK_INTERVAL: 30000,
     SHUTDOWN_TIMEOUT: 10000,
@@ -79,6 +87,8 @@ const config = {
     // --- NEW: Cloudflare TURN Server Credentials (keep secret) ---
     CLOUDFLARE_TURN_TOKEN_ID: process.env.CLOUDFLARE_TURN_TOKEN_ID || "",
     CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || "",
+
+    NO_DB,
 };
 
 module.exports = config;
