@@ -4,17 +4,34 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest --detectOpenHandles"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "verbose": true,
+    "coveragePathIgnorePatterns": [
+      "/node_modules/"
+    ]
   },
   "dependencies": {
     "axios": "^1.13.2",
     "dotenv": "^17.2.3",
     "pg": "^8.16.3",
     "uploadthing": "^7.7.4",
-    "ws": "^8.13.0",
-    "yargs-parser": "^22.0.0"
+    "yargs-parser": "^21.1.1"
   },
   "devDependencies": {
-    "clines": "^2.0.2"
+    "@babel/preset-env": "^7.28.5",
+    "@types/bun": "latest",
+    "babel-plugin-dynamic-import-node": "^2.3.3",
+    "clines": "^2.0.2",
+    "jest": "^30.2.0",
+    "node-mocks-http": "^1.17.2",
+    "supertest": "^7.1.4",
+    "ws": "^8.18.3"
+  },
+  "private": true,
+  "peerDependencies": {
+    "typescript": "^5"
   }
 }
