@@ -8,6 +8,7 @@ const config = require("./config");
 const state = require("./state");
 const { log, getClientIp, getLocalIpForDisplay } = require("./utils");
 const { handleUploadThingRequest } = require("./uploadthingHandler");
+const { handleRequestEmail } = require("./emailService");
 
 // --- THIS IS THE FIX ---
 // Use the port Render provides via environment variable.
@@ -26,6 +27,17 @@ function setTurnCors(res, req) {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
+// --- NEW: Helper for setting CORS headers for the email endpoint ---
+function setEmailCors(res, req) {
+    const origin = req.headers.origin;
+    if (origin && (config.ALLOWED_ORIGINS.has(origin) || config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin))) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+    }
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
 const server = http.createServer(async (req, res) => {
     try {
         const url = new URL(req.url, `http://${req.headers.host}`);
@@ -36,6 +48,32 @@ const server = http.createServer(async (req, res) => {
         // UploadThing endpoint
         if (url.pathname.startsWith("/api/uploadthing")) {
             return handleUploadThingRequest(req, res);
+        }
+
+        // --- NEW: Email Request Endpoint ---
+        if (req.method === "OPTIONS" && url.pathname === "/request-email") {
+            setEmailCors(res, req);
+            res.writeHead(204);
+            res.end();
+            return;
+        }
+
+        if (req.method === "POST" && url.pathname === "/request-email") {
+            setEmailCors(res, req);
+            let body = "";
+            req.on("data", (chunk) => {
+                body += chunk.toString();
+            });
+            req.on("end", () => {
+                try {
+                    req.body = JSON.parse(body);
+                    handleRequestEmail(req, res);
+                } catch (e) {
+                    res.writeHead(400, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: "Invalid JSON" }));
+                }
+            });
+            return;
         }
 
         // --- NEW: TURN Server Credentials Endpoint ---

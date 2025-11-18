@@ -89,6 +89,10 @@ const config = {
     CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || "",
 
     NO_DB,
+
+    // --- NEW: reCAPTCHA and Contact Email ---
+    recaptchaSecretKey: process.env.RECAPTCHA_SECRET_KEY || "",
+    contactEmail: process.env.CONTACT_EMAIL || "",
 };
 
 module.exports = config;
