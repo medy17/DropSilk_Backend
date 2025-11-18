@@ -1,34 +1,42 @@
 const axios = require('axios');
 const config = require('./config');
 
+function sendJson(res, statusCode, obj) {
+    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(obj));
+}
+
 async function handleRequestEmail(req, res) {
-    const { token } = req.body;
-
-    if (!token) {
-        return res.status(400).json({ error: 'reCAPTCHA token is required' });
-    }
-
     try {
+        const { token } = req.body || {};
+
+        if (!token) {
+            return sendJson(res, 400, { error: 'reCAPTCHA token is required' });
+        }
+
         const response = await axios.post('https://www.google.com/recaptcha/api/siteverify', null, {
             params: {
                 secret: config.recaptchaSecretKey,
-                response: token
-            }
+                response: token,
+            },
         });
 
-        const { success } = response.data;
+        const { success } = response.data || {};
 
         if (success) {
-            res.status(200).json({ email: config.contactEmail });
-        } else {
-            res.status(400).json({ error: 'reCAPTCHA verification failed' });
+            if (!config.contactEmail) {
+                return sendJson(res, 500, { error: 'server_not_configured' });
+            }
+            return sendJson(res, 200, { email: config.contactEmail });
         }
+
+        return sendJson(res, 400, { error: 'recaptcha_failed' });
     } catch (error) {
         console.error('reCAPTCHA verification error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        return sendJson(res, 500, { error: 'internal_error' });
     }
 }
 
 module.exports = {
-    handleRequestEmail
+    handleRequestEmail,
 };
