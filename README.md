@@ -143,6 +143,7 @@ Operational notes:
 -   NAT Traversal: Cloudflare STUN/TURN
 -   File previews: UploadThing Server SDK
 -   Database: PostgreSQL (via `pg`)
+-   Testing: Jest
 
 ## Getting Started (Local Development)
 
@@ -172,7 +173,7 @@ To run the signaling server locally, follow these steps.
     Create a `.env` file in the root of the project. This is where you'll store
     your secrets and configuration.
 
-    ```
+    ```env
     # .env
 
     # Required for the PPTX preview feature. Get this from UploadThing.
@@ -207,7 +208,7 @@ To run the signaling server locally, follow these steps.
 
 1.  Start the server:
     ```bash
-    npm start
+    node server.js
     ```
     By default, the server will run on `http://localhost:8080`.
 
@@ -216,7 +217,13 @@ To run the signaling server locally, follow these steps.
     [DropSilk Frontend](https://github.com/medy17/dropsilk) locally (typically
     on port `5173`), allow the backend to accept that origin:
     ```bash
-    npm start -- --allow-local-port=5173
+    node server.js --allow-local-port=5173
+    ```
+
+    OR
+
+    ```bash
+    npm start -- --allow-local-port=5173 --noDB
     ```
     The server will now accept WebSocket connections from
     `http://localhost:5173` and `http://127.0.0.1:5173`.
@@ -224,6 +231,15 @@ To run the signaling server locally, follow these steps.
 3.  Local database tip (optional):
     If you want the full preview+cleanup flow locally, make sure Postgres is
     running and `DATABASE_URL` is set in your `.env`.
+
+### Testing
+
+The project uses [Jest](https://jestjs.io/) for unit and integration testing.
+
+To run the tests:
+```bash
+npm test
+```
 
 ### Cleanup Service Configuration
 
