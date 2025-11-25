@@ -253,4 +253,26 @@ describe('Signaling Service (WebSocket)', () => {
             expect([ws.CLOSED, ws.CLOSING]).toContain(ws.readyState);
         }
     });
+
+    test('Should broadcast users on the same network (Regression Test)', async () => {
+        const user1 = await createClient();
+        const user2 = await createClient();
+
+        await waitForMessage(user1, 'registered');
+        await waitForMessage(user2, 'registered');
+
+        user1.send(JSON.stringify({ type: 'register-details', name: 'UserOne' }));
+
+        // User 2 registers. This triggers broadcastUsersOnSameNetwork.
+        // If the typo bug exists, the server throws silently and sends nothing.
+        user2.send(JSON.stringify({ type: 'register-details', name: 'UserTwo' }));
+
+        // We just need to verify that we actually receive the update message.
+        // If the function crashes, this will timeout and fail the test.
+        const msg = await waitForMessage(user1, 'users-on-network-update');
+
+        expect(msg.users).toBeDefined();
+        // Note: Depending on async timing, the list might contain UserTwo immediately or on a subsequent update.
+        // The critical check here is that the message is sent at all (proving no crash).
+    });
 });

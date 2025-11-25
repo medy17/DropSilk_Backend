@@ -304,8 +304,8 @@ function broadcastUsersOnSameNetwork() {
 
             // Group by public IP, or by /24 subnet for private IPs
             let groupingKey = isPrivateIP(meta.remoteIp) ? meta.remoteIp.split('.').slice(0, 3).join('.') : meta.remoteIp;
-            if (!clientsByNetworkGroup[groupKey]) clientsByNetworkGroup[groupKey] = [];
-            clientsByNetworkGroup[groupKey].push({ id: meta.id, name: meta.name });
+            if (!clientsByNetworkGroup[groupingKey]) clientsByNetworkGroup[groupingKey] = [];
+            clientsByNetworkGroup[groupingKey].push({ id: meta.id, name: meta.name });
         }
 
         for (const [ws, meta] of state.clients.entries()) {
@@ -318,7 +318,7 @@ function broadcastUsersOnSameNetwork() {
             }
 
             let groupingKey = isPrivateIP(meta.remoteIp) ? meta.remoteIp.split('.').slice(0, 3).join('.') : meta.remoteIp;
-            const usersOnNetwork = clientsByNetworkGroup[groupKey] ? clientsByNetworkGroup[groupKey].filter((c) => c.id !== meta.id) : [];
+            const usersOnNetwork = clientsByNetworkGroup[groupingKey] ? clientsByNetworkGroup[groupingKey].filter((c) => c.id !== meta.id) : [];
             ws.send(JSON.stringify({ type: "users-on-network-update", users: usersOnNetwork }));
         }
     } catch (error) {
