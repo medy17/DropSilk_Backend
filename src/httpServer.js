@@ -115,7 +115,7 @@ const server = http.createServer(async (req, res) => {
                 }
 
                 const data = await response.json();
-                log("info", "Successfully fetched TURN credentials from Cloudflare", {
+                log("info", "turn_credentials_issued", {
                     clientIp: clientIp,
                 });
 

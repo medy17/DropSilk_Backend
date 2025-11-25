@@ -12,6 +12,7 @@ const {
 } = require("./src/signalingService");
 const { setupGracefulShutdown, log } = require("./src/utils");
 const { initializeDatabase } = require("./src/dbClient");
+const state = require("./src/state"); // <-- Import the application state
 const { startCleanupService } = require("./src/cleanupService");
 
 const argv = require("yargs-parser")(process.argv.slice(2));
@@ -31,6 +32,24 @@ async function startApp() {
 
     // 4. Set up listeners for graceful shutdown on SIGINT/SIGTERM
     setupGracefulShutdown(server, closeConnections); // <-- Pass the function here
+
+    // --- NEW: Start the server heartbeat for dashboarding ---
+    const HEARTBEAT_INTERVAL_MS = 60 * 1000; // Log stats every 60 seconds
+    setInterval(() => {
+        const memoryUsage = process.memoryUsage();
+        const stats = {
+            activeConnections: state.clients.size,
+            activeFlights: Object.keys(state.flights).length,
+            uptimeSeconds: Math.floor(process.uptime()),
+            // Memory usage in MB for easier graphing
+            memoryRssMb: Math.round(memoryUsage.rss / 1024 / 1024),
+            memoryHeapTotalMb: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+            memoryHeapUsedMb: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+        };
+
+        // This is the golden log entry for your dashboards
+        log("info", "server_heartbeat", stats);
+    }, HEARTBEAT_INTERVAL_MS);
 
     // 5. Start the cleanup service to run every 60 minutes (only if DB enabled)
     if (!argv.noDB) {

@@ -48,9 +48,9 @@ async function getUtRequestHandler() {
                 if (db.isDatabaseInitialized()) {
                     try {
                         const insertQuery = `
-                        INSERT INTO uploaded_files (file_key, file_url, file_name)
-                        VALUES ($1, $2, $3)
-                    `;
+                            INSERT INTO uploaded_files (file_key, file_url, file_name)
+                            VALUES ($1, $2, $3)
+                        `;
                         // Using parameterized queries ($1, $2) is a MUST to prevent SQL injection.
                         // The pg library handles sanitizing the inputs for you.
                         await db.query(insertQuery, [

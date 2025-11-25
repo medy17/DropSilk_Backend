@@ -137,7 +137,10 @@ function handleMessage(ws, message) {
                     return;
                 }
                 const flightCode = Math.random().toString(36).substr(2, 6).toUpperCase();
-                state.flights[flightCode] = [ws];
+                state.flights[flightCode] = {
+                    members: [ws],
+                    establishedAt: null // We'll set this when the 2nd user joins
+                };
                 meta.flightCode = flightCode;
                 state.connectionStats.totalFlightsCreated++;
                 log('info', 'Flight created', { flightCode, creatorId: meta.id });
@@ -155,7 +158,7 @@ function handleMessage(ws, message) {
                     return;
                 }
                 const flight = state.flights[data.flightCode];
-                if (!flight || flight.length >= 2) {
+                if (!flight || flight.members.length >= 2) {
                     log("info", "Client failed to join flight", {
                         clientId: meta.id,
                         flightCode: data.flightCode,
@@ -165,7 +168,7 @@ function handleMessage(ws, message) {
                     return;
                 }
 
-                const creatorWs = flight[0];
+                const creatorWs = flight.members[0];
                 const creatorMeta = state.clients.get(creatorWs);
                 const joinerMeta = meta; // For clarity
 
@@ -197,10 +200,18 @@ function handleMessage(ws, message) {
                 });
                 // --- END: RESTORED LOGIC ---
 
-                flight.push(ws);
+                flight.members.push(ws);
+                flight.establishedAt = Date.now(); // Mark the flight as officially started
                 meta.flightCode = data.flightCode;
                 state.connectionStats.totalFlightsJoined++;
                 log('info', 'Flight joined', { flightCode: data.flightCode, joinerId: meta.id });
+
+                // --- NEW DASHBOARD LOG ---
+                // Log that a flight connection was successfully established and its type.
+                log('info', 'flight_established', {
+                    flightCode: data.flightCode,
+                    connectionType: connectionType, // 'lan' or 'wan'
+                });
 
                 // Send the connectionType to BOTH peers.
                 ws.send(JSON.stringify({ type: "peer-joined", flightCode: data.flightCode, peer: { id: creatorMeta.id, name: creatorMeta.name }, connectionType: connectionType }));
@@ -221,7 +232,7 @@ function handleMessage(ws, message) {
 
             case "signal":
                 if (!meta.flightCode || !state.flights[meta.flightCode]) return;
-                state.flights[meta.flightCode].forEach((client) => {
+                state.flights[meta.flightCode].members.forEach((client) => {
                     if (client !== ws && client.readyState === WebSocket.OPEN) {
                         client.send(JSON.stringify({ type: "signal", data: data.data }));
                     }
@@ -244,18 +255,38 @@ function handleDisconnect(ws) {
     if (!meta) return;
 
     state.clients.delete(ws);
+
+    // --- NEW DASHBOARD LOG ---
+    // Calculate and log the total session duration for this user.
+    const sessionDurationMs = new Date() - new Date(meta.connectedAt);
+    log('info', 'client_session_ended', {
+        clientId: meta.id,
+        durationSeconds: Math.round(sessionDurationMs / 1000),
+    });
     state.connectionStats.totalDisconnections++;
     log('info', 'Client disconnected', { clientId: meta.id, remainingClients: state.clients.size });
 
     if (meta.flightCode && state.flights[meta.flightCode]) {
-        const flight = state.flights[meta.flightCode];
-        state.flights[meta.flightCode] = flight.filter((c) => c !== ws);
+        const flightRef = state.flights[meta.flightCode];
 
-        state.flights[meta.flightCode].forEach((client) => {
+        // --- NEW DASHBOARD LOG ---
+        // If the flight was fully established, calculate and log its duration.
+        if (flightRef.establishedAt && flightRef.members.length === 2) {
+            const flightDurationMs = Date.now() - flightRef.establishedAt;
+            log('info', 'flight_ended', {
+                flightCode: meta.flightCode,
+                durationSeconds: Math.round(flightDurationMs / 1000),
+            });
+        }
+
+        // Now, do the cleanup
+        flightRef.members = flightRef.members.filter((c) => c !== ws);
+
+        flightRef.members.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "peer-left" }));
         });
 
-        if (state.flights[meta.flightCode].length === 0) {
+        if (flightRef.members.length === 0) {
             delete state.flights[meta.flightCode];
             log('info', 'Flight closed', { flightCode: meta.flightCode });
         }
@@ -269,25 +300,25 @@ function broadcastUsersOnSameNetwork() {
         for (const [ws, meta] of state.clients.entries()) {
             if (!meta || ws.readyState !== WebSocket.OPEN) continue;
             // Don't show users who are already paired up
-            if (meta.flightCode && state.flights[meta.flightCode] && state.flights[meta.flightCode].length === 2) continue;
+            if (meta.flightCode && state.flights[meta.flightCode] && state.flights[meta.flightCode].members.length === 2) continue;
 
             // Group by public IP, or by /24 subnet for private IPs
             let groupingKey = isPrivateIP(meta.remoteIp) ? meta.remoteIp.split('.').slice(0, 3).join('.') : meta.remoteIp;
-            if (!clientsByNetworkGroup[groupingKey]) clientsByNetworkGroup[groupingKey] = [];
-            clientsByNetworkGroup[groupingKey].push({ id: meta.id, name: meta.name });
+            if (!clientsByNetworkGroup[groupKey]) clientsByNetworkGroup[groupKey] = [];
+            clientsByNetworkGroup[groupKey].push({ id: meta.id, name: meta.name });
         }
 
         for (const [ws, meta] of state.clients.entries()) {
             if (!meta || ws.readyState !== WebSocket.OPEN) continue;
 
             // Send an empty list to users who are already paired
-            if (meta.flightCode && state.flights[meta.flightCode] && state.flights[meta.flightCode].length === 2) {
+            if (meta.flightCode && state.flights[meta.flightCode] && state.flights[meta.flightCode].members.length === 2) {
                 ws.send(JSON.stringify({ type: "users-on-network-update", users: [] }));
                 continue;
             }
 
             let groupingKey = isPrivateIP(meta.remoteIp) ? meta.remoteIp.split('.').slice(0, 3).join('.') : meta.remoteIp;
-            const usersOnNetwork = clientsByNetworkGroup[groupingKey] ? clientsByNetworkGroup[groupingKey].filter((c) => c.id !== meta.id) : [];
+            const usersOnNetwork = clientsByNetworkGroup[groupKey] ? clientsByNetworkGroup[groupKey].filter((c) => c.id !== meta.id) : [];
             ws.send(JSON.stringify({ type: "users-on-network-update", users: usersOnNetwork }));
         }
     } catch (error) {

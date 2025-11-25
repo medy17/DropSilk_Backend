@@ -1,3 +1,4 @@
+// --- src/emailService.js ---
 const axios = require('axios');
 const config = require('./config');
 const { log } = require("./utils"); // <-- Import the log function
