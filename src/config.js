@@ -2,6 +2,7 @@
 
 const os = require("os");
 const interfaces = os.networkInterfaces();
+const { log } = require("./utils"); // <-- Import the log function
 
 // Parse CLI flags once and expose NO_DB in config
 const argv = require("yargs-parser")(process.argv.slice(2));
@@ -32,11 +33,10 @@ process.argv.slice(2).forEach((arg) => {
             ALLOWED_ORIGINS.add(localOrigin1);
             ALLOWED_ORIGINS.add(localOrigin2);
 
-            console.log(
-                `[Config] Development: Dynamically allowing origins for port ${port}:`,
-            );
-            console.log(`         - ${localOrigin1}`);
-            console.log(`         - ${localOrigin2}`);
+            log("info", "Dynamically allowing local origins", {
+                port,
+                origins: [localOrigin1, localOrigin2],
+            });
 
             // --- 192.168.x.x origins ---
             for (const name of Object.keys(interfaces)) {
@@ -49,14 +49,17 @@ process.argv.slice(2).forEach((arg) => {
                     ) {
                         const localOrigin3 = `http://${address}:${port}`;
                         ALLOWED_ORIGINS.add(localOrigin3);
-                        console.log(`         - ${localOrigin3}`);
+                        log("info", "Dynamically allowing local network origin", {
+                            port,
+                            origin: localOrigin3,
+                        });
                     }
                 }
             }
         } else {
-            console.warn(
-                `[Config] Invalid port number provided with ${localPortArgPrefix}: "${portStr}". Ignoring.`,
-            );
+            log("warn", "Invalid port number provided for local origin", {
+                argument: arg,
+            });
         }
     }
 });

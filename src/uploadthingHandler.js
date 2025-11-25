@@ -21,24 +21,13 @@ async function getUtRequestHandler() {
         );
 
     const tokenForDebug = config.UPLOADTHING_TOKEN;
-    console.log("--- CRITICAL DEBUG: CHECKING UPLOADTHING_TOKEN ---");
-    console.log(`Type of token: ${typeof tokenForDebug}`);
-    console.log(`Token length: ${tokenForDebug.length}`);
-    if (tokenForDebug.length > 10) {
-        console.log(
-            `Token starts with: "${tokenForDebug.substring(0, 5)}..."`,
-        );
-        console.log(
-            `Token ends with: "...${tokenForDebug.substring(
-                tokenForDebug.length - 5,
-            )}"`,
-        );
-    } else {
-        console.log(
-            `Token value is too short or empty: "${tokenForDebug}"`,
-        );
-    }
-    console.log("--------------------------------------------------");
+
+    // This replaces all the console.log statements with one structured log
+    log("info", "Checking UploadThing token during handler setup", {
+        tokenExists: !!tokenForDebug,
+        tokenLength: tokenForDebug.length,
+        tokenPrefix: tokenForDebug.substring(0, 5),
+    });
 
     const f = createUploadthing();
 

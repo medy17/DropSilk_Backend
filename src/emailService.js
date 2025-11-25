@@ -1,5 +1,6 @@
 const axios = require('axios');
 const config = require('./config');
+const { log } = require("./utils"); // <-- Import the log function
 
 function sendJson(res, statusCode, obj) {
     res.writeHead(statusCode, { 'Content-Type': 'application/json' });
@@ -32,7 +33,11 @@ async function handleRequestEmail(req, res) {
 
         return sendJson(res, 400, { error: 'recaptcha_failed' });
     } catch (error) {
-        console.error('reCAPTCHA verification error:', error);
+        log("error", "reCAPTCHA verification request failed", {
+            // Safely log the error message without exposing too much detail
+            errorMessage: error.message,
+            axiosResponse: error.response?.data,
+        });
         return sendJson(res, 500, { error: 'internal_error' });
     }
 }

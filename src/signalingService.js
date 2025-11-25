@@ -41,7 +41,10 @@ function verifyClient(info, done) {
         if (isAllowed) {
             done(true);
         } else {
-            log('warn', 'Client connection rejected due to invalid origin (production)', { origin });
+            log('warn', 'Client connection rejected due to invalid origin (production)', {
+                origin,
+                ip: getClientIp(info.req)
+            });
             done(false, 403, 'Forbidden: Invalid Origin');
         }
         return;
@@ -52,7 +55,10 @@ function verifyClient(info, done) {
     if (config.ALLOWED_ORIGINS.has(origin) || !origin) {
         done(true);
     } else {
-        log('warn', 'Client connection rejected due to invalid origin (development)', { origin });
+        log('warn', 'Client connection rejected due to invalid origin (development)', {
+            origin,
+            ip: getClientIp(info.req)
+        });
         done(false, 403, 'Forbidden: Invalid Origin');
     }
 }
@@ -150,6 +156,11 @@ function handleMessage(ws, message) {
                 }
                 const flight = state.flights[data.flightCode];
                 if (!flight || flight.length >= 2) {
+                    log("info", "Client failed to join flight", {
+                        clientId: meta.id,
+                        flightCode: data.flightCode,
+                        reason: !flight ? "not_found" : "flight_full",
+                    });
                     ws.send(JSON.stringify({ type: "error", message: "Flight not found or full" }));
                     return;
                 }

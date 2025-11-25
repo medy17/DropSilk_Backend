@@ -44,6 +44,8 @@ async function startApp() {
 }
 
 startApp().catch((error) => {
-    console.error("🚨 Failed to start application:", error);
+    // Use our logger here! If the logger itself fails, it'll fall back to console
+    // This ensures catastrophic startup failures are captured.
+    log("error", "Failed to start application", { error: error.message, stack: error.stack });
     process.exit(1);
 });

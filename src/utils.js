@@ -5,23 +5,29 @@ const config = require('./config');
 
 // --- Logging ---
 function log(level, message, meta = {}) {
-    const timestamp = new Date().toISOString();
-    const metaStr = Object.keys(meta).length > 0 ? ` | ${JSON.stringify(meta)}` : '';
-    const logEntry = `[${timestamp}] [${level.toUpperCase()}] ${message}${metaStr}`;
-
-    // We require these here inside the function to avoid potential circular dependency issues at startup.
     const { logs } = require('./state');
     const { MAX_LOG_BUFFER_SIZE } = require('./config');
 
-    // 1. Add the new log entry to our in-memory buffer
+    // Create a structured log object
+    const logObject = {
+        timestamp: new Date().toISOString(),
+        level: level.toUpperCase(),
+        message,
+        ...meta, // Spread the metadata into the top level of the object
+    };
+
+    // Convert the object to a JSON string for output
+    const logEntry = JSON.stringify(logObject);
+
+    // 1. Add the new log entry to our in-memory buffer (still useful for the /logs endpoint)
     logs.push(logEntry);
 
-    // 2. Trim the buffer if it exceeds the max size (acts as a circular buffer)
+    // 2. Trim the buffer if it exceeds the max size
     if (logs.length > MAX_LOG_BUFFER_SIZE) {
-        logs.shift(); // Removes the oldest log entry from the beginning of the array
+        logs.shift();
     }
 
-    // 3. Output to the console as usual
+    // 3. Output to the console. This is what Render will capture.
     console.log(logEntry);
 }
 

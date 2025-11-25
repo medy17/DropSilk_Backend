@@ -115,6 +115,10 @@ const server = http.createServer(async (req, res) => {
                 }
 
                 const data = await response.json();
+                log("info", "Successfully fetched TURN credentials from Cloudflare", {
+                    clientIp: clientIp,
+                });
+
                 // The new endpoint returns the full iceServers array directly
                 if (!data.iceServers || !Array.isArray(data.iceServers) || data.iceServers.length === 0) {
                     log('error', 'Cloudflare response did not contain valid TURN credentials', { responseData: data });
