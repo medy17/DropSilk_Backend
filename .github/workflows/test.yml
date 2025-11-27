@@ -1,5 +1,4 @@
-name:
-  Node.js CIname: Node.js CI
+name: Node.js CI
 
 on:
   push:
@@ -11,7 +10,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    # This ensures specific Node version
     strategy:
       matrix:
         node-version: [ 18.x ]
@@ -28,7 +26,6 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      # We need to transform imports for UploadThing, so we need the babel setup
       - name: Install Babel for Tests
         run: npm install --save-dev babel-plugin-dynamic-import-node @babel/preset-env
 
