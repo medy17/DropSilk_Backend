@@ -1,7 +1,7 @@
 // --- src/emailService.js ---
 const axios = require('axios');
 const config = require('./config');
-const { log } = require("./utils"); // <-- Import the log function
+const { eventBus, EVENTS } = require("./telemetry");
 
 function sendJson(res, statusCode, obj) {
     res.writeHead(statusCode, { 'Content-Type': 'application/json' });
@@ -16,6 +16,8 @@ async function handleRequestEmail(req, res) {
             return sendJson(res, 400, { error: 'reCAPTCHA token is required' });
         }
 
+        eventBus.emit(EVENTS.EMAIL.REQUEST, { status: "validating" });
+
         const response = await axios.post('https://www.google.com/recaptcha/api/siteverify', null, {
             params: {
                 secret: config.recaptchaSecretKey,
@@ -27,6 +29,7 @@ async function handleRequestEmail(req, res) {
 
         if (success) {
             if (!config.contactEmail) {
+                eventBus.emit(EVENTS.EMAIL.ERROR, { error: 'server_not_configured' });
                 return sendJson(res, 500, { error: 'server_not_configured' });
             }
             return sendJson(res, 200, { email: config.contactEmail });
@@ -34,9 +37,9 @@ async function handleRequestEmail(req, res) {
 
         return sendJson(res, 400, { error: 'recaptcha_failed' });
     } catch (error) {
-        log("error", "reCAPTCHA verification request failed", {
-            // Safely log the error message without exposing too much detail
-            errorMessage: error.message,
+        eventBus.emit(EVENTS.EMAIL.ERROR, {
+            context: "reCAPTCHA verification failed",
+            error: error.message,
             axiosResponse: error.response?.data,
         });
         return sendJson(res, 500, { error: 'internal_error' });

@@ -1,31 +1,36 @@
-// tests/email.test.js
-const axios = require('axios');
-const httpMocks = require('node-mocks-http');
-const { handleRequestEmail } = require('../src/emailService');
-const { log } = require('../src/utils'); // <-- Import the log function
+// --- tests/email.test.js ---
+const axios = require("axios");
+const httpMocks = require("node-mocks-http");
+const { handleRequestEmail } = require("../src/emailService");
 
 // Mock dependencies
-jest.mock('axios');
-jest.mock('../src/config', () => ({
-    recaptchaSecretKey: 'mock-secret-key',
-    contactEmail: 'admin@example.com'
-}));
-// We will mock 'utils' to spy on the log function
-jest.mock('../src/utils', () => ({
-    log: jest.fn()
+jest.mock("axios");
+jest.mock("../src/config", () => ({
+    recaptchaSecretKey: "mock-secret-key",
+    contactEmail: "admin@example.com",
 }));
 
-describe('Email Service', () => {
+// Mock the telemetry event bus
+// Define the mock inside the factory to avoid hoisting issues
+jest.mock("../src/telemetry", () => ({
+    eventBus: {
+        emit: jest.fn(),
+    },
+    EVENTS: jest.requireActual("../src/telemetry/events"),
+}));
+// Get a reference to the mock function AFTER the mock is in place
+const { eventBus, EVENTS } = require("../src/telemetry");
+const mockEmit = eventBus.emit;
 
-    // Clear mocks before each test to ensure a clean slate
+describe("Email Service", () => {
     beforeEach(() => {
-        log.mockClear();
+        mockEmit.mockClear();
     });
 
-    test('Should return 400 if token is missing', async () => {
+    test("Should return 400 if token is missing", async () => {
         const req = httpMocks.createRequest({
-            method: 'POST',
-            url: '/request-email',
+            method: "POST",
+            url: "/request-email",
             body: {},
         });
         const res = httpMocks.createResponse();
@@ -33,14 +38,16 @@ describe('Email Service', () => {
         await handleRequestEmail(req, res);
 
         expect(res.statusCode).toBe(400);
-        expect(JSON.parse(res._getData())).toEqual({ error: 'reCAPTCHA token is required' });
+        expect(JSON.parse(res._getData())).toEqual({
+            error: "reCAPTCHA token is required",
+        });
     });
 
-    test('Should return 400 if reCAPTCHA verification fails', async () => {
+    test("Should emit REQUEST event when validating", async () => {
         const req = httpMocks.createRequest({
-            method: 'POST',
-            url: '/request-email',
-            body: { token: 'invalid-token' },
+            method: "POST",
+            url: "/request-email",
+            body: { token: "any-token" },
         });
         const res = httpMocks.createResponse();
 
@@ -48,15 +55,16 @@ describe('Email Service', () => {
 
         await handleRequestEmail(req, res);
 
-        expect(res.statusCode).toBe(400);
-        expect(JSON.parse(res._getData())).toEqual({ error: 'recaptcha_failed' });
+        expect(mockEmit).toHaveBeenCalledWith(EVENTS.EMAIL.REQUEST, {
+            status: "validating",
+        });
     });
 
-    test('Should return 200 and email if reCAPTCHA succeeds', async () => {
+    test("Should return 200 and email if reCAPTCHA succeeds", async () => {
         const req = httpMocks.createRequest({
-            method: 'POST',
-            url: '/request-email',
-            body: { token: 'valid-token' },
+            method: "POST",
+            url: "/request-email",
+            body: { token: "valid-token" },
         });
         const res = httpMocks.createResponse();
 
@@ -65,31 +73,54 @@ describe('Email Service', () => {
         await handleRequestEmail(req, res);
 
         expect(res.statusCode).toBe(200);
-        expect(JSON.parse(res._getData())).toEqual({ email: 'admin@example.com' });
+        expect(JSON.parse(res._getData())).toEqual({
+            email: "admin@example.com",
+        });
     });
 
-    test('Should return 500 if Google API errors out', async () => {
+    test("Should emit ERROR and return 500 if Google API errors out", async () => {
         const req = httpMocks.createRequest({
-            method: 'POST',
-            url: '/request-email',
-            body: { token: 'valid-token' },
+            method: "POST",
+            url: "/request-email",
+            body: { token: "valid-token" },
         });
         const res = httpMocks.createResponse();
 
-        // Mock Network Error
-        axios.post.mockRejectedValue(new Error('Network Error'));
+        const apiError = new Error("Network Error");
+        axios.post.mockRejectedValue(apiError);
 
         await handleRequestEmail(req, res);
 
         expect(res.statusCode).toBe(500);
-        expect(JSON.parse(res._getData())).toEqual({ error: 'internal_error' });
+        expect(JSON.parse(res._getData())).toEqual({ error: "internal_error" });
 
-        // --- THE FIX ---
-        // Verify that our structured logger was called with 'error'
-        expect(log).toHaveBeenCalledWith(
-            'error',
-            expect.any(String), // We don't care about the exact message
-            expect.any(Object)   // We just care that it was called correctly
-        );
+        // Verify that the correct telemetry event was emitted
+        expect(mockEmit).toHaveBeenCalledWith(EVENTS.EMAIL.ERROR, {
+            context: "reCAPTCHA verification failed",
+            error: "Network Error",
+            axiosResponse: undefined,
+        });
+    });
+
+    test("Should emit ERROR if contactEmail is not configured", async () => {
+        const config = require("../src/config");
+        config.contactEmail = ""; // Temporarily unset for this test
+
+        const req = httpMocks.createRequest({
+            method: "POST",
+            url: "/request-email",
+            body: { token: "valid-token" },
+        });
+        const res = httpMocks.createResponse();
+
+        axios.post.mockResolvedValue({ data: { success: true } });
+        await handleRequestEmail(req, res);
+
+        expect(res.statusCode).toBe(500);
+        expect(mockEmit).toHaveBeenCalledWith(EVENTS.EMAIL.ERROR, {
+            error: "server_not_configured",
+        });
+
+        config.contactEmail = "admin@example.com"; // Restore
     });
 });

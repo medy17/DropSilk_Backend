@@ -1,9 +1,8 @@
 // --- src/uploadthingHandler.js ---
-// This is the final, corrected backend file.
 
-const { log } = require("./utils");
 const config = require("./config");
-const db = require("./dbClient"); // <-- IMPORT OUR DB CLIENT
+const db = require("./dbClient");
+const { eventBus, EVENTS } = require("./telemetry");
 
 let utRequestHandler = null;
 
@@ -11,23 +10,12 @@ async function getUtRequestHandler() {
     if (utRequestHandler) return utRequestHandler;
 
     if (!config.UPLOADTHING_TOKEN) {
-        throw new Error(
-            "Missing UPLOADTHING_TOKEN in config.js (from environment variable)",
-        );
+        throw new Error("Missing UPLOADTHING_TOKEN in config.js");
     }
 
     const { createUploadthing, createRouteHandler } = await import(
         "uploadthing/server"
         );
-
-    const tokenForDebug = config.UPLOADTHING_TOKEN;
-
-    // This replaces all the console.log statements with one structured log
-    log("info", "Checking UploadThing token during handler setup", {
-        tokenExists: !!tokenForDebug,
-        tokenLength: tokenForDebug.length,
-        tokenPrefix: tokenForDebug.substring(0, 5),
-    });
 
     const f = createUploadthing();
 
@@ -40,44 +28,32 @@ async function getUtRequestHandler() {
                 return { uploadedBy: "dropsilk-preview" };
             })
             .onUploadComplete(async ({ file }) => {
-                log("info", "✅ UploadThing onUploadComplete SUCCESS", {
+                eventBus.emit(EVENTS.UPLOAD.SUCCESS, {
                     url: file.url,
+                    key: file.key,
                 });
 
-                // --- NEW DATABASE LOGIC ---
                 if (db.isDatabaseInitialized()) {
                     try {
                         const insertQuery = `
                             INSERT INTO uploaded_files (file_key, file_url, file_name)
                             VALUES ($1, $2, $3)
                         `;
-                        // Using parameterized queries ($1, $2) is a MUST to prevent SQL injection.
-                        // The pg library handles sanitizing the inputs for you.
                         await db.query(insertQuery, [
                             file.key,
                             file.url,
                             file.name,
                         ]);
 
-                        log("info", "📝 Saved file metadata to database", {
-                            key: file.key,
-                        });
+                        eventBus.emit(EVENTS.UPLOAD.DB_SAVED, { key: file.key });
                     } catch (dbError) {
-                        log(
-                            "error",
-                            "🚨 Failed to save file metadata to database",
-                            {
-                                key: file.key,
-                                error: dbError.message,
-                            },
-                        );
-                        // Here you might want to delete the file from UploadThing to prevent orphans
+                        eventBus.emit(EVENTS.UPLOAD.ERROR, {
+                            context: "DB Save Failed",
+                            key: file.key,
+                            error: dbError.message,
+                        });
                     }
-                } else {
-                    log("warn", "⚠️ Database not initialized. Skipping DB save for uploaded file.");
                 }
-                // --- END NEW LOGIC ---
-
                 return { url: file.url };
             }),
     };
@@ -92,10 +68,6 @@ async function getUtRequestHandler() {
             token: config.UPLOADTHING_TOKEN,
             callbackUrl: callbackUrl,
         },
-    });
-
-    log("info", "UploadThing handler configured", {
-        callbackUrl: callbackUrl,
     });
 
     return utRequestHandler;
@@ -131,18 +103,13 @@ async function sendWebResponse(res, response) {
     res.end(Buffer.from(arrayBuf));
 }
 
-// --- AFTER THE FIX ---
-// --- THE FINAL, PERMANENT FIX ---
 function setCors(res, origin) {
     if (origin) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Vary", "Origin");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-
-    // Allow any headers sent from the trusted origin. This stops the whack-a-mole game.
     res.setHeader("Access-Control-Allow-Headers", "*");
-
     res.setHeader("Access-Control-Max-Age", "86400");
 }
 
@@ -162,7 +129,10 @@ async function handleUploadThingRequest(req, res) {
         const webRes = await handler(webReq);
         await sendWebResponse(res, webRes);
     } catch (err) {
-        log("error", "UploadThing route error", { error: err.message });
+        eventBus.emit(EVENTS.UPLOAD.ERROR, {
+            context: "Handler Route Error",
+            error: err.message,
+        });
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "UploadThing routing error" }));
     }

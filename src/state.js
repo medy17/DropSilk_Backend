@@ -8,17 +8,11 @@ const connectionStats = {
     totalDisconnections: 0,
     totalFlightsCreated: 0,
     totalFlightsJoined: 0,
-    startTime: Date.now()
+    startTime: Date.now(),
 };
-
-// --- NEW STATE ---
-// An in-memory array to store the most recent log entries.
-const logs = [];
-// --- END OF NEW STATE ---
 
 module.exports = {
     clients,
     flights,
     connectionStats,
-    logs, // <-- Export the new logs array
 };

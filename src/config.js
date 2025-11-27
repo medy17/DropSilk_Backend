@@ -2,7 +2,7 @@
 
 const os = require("os");
 const interfaces = os.networkInterfaces();
-const { log } = require("./utils"); // <-- Import the log function
+// REMOVED: const { log } = require("./utils"); <--- CAUSED THE CYCLE
 
 // Parse CLI flags once and expose NO_DB in config
 const argv = require("yargs-parser")(process.argv.slice(2));
@@ -33,10 +33,13 @@ process.argv.slice(2).forEach((arg) => {
             ALLOWED_ORIGINS.add(localOrigin1);
             ALLOWED_ORIGINS.add(localOrigin2);
 
-            log("info", "Dynamically allowing local origins", {
+            // Use console.log here to avoid circular dependency with utils.js
+            console.log(JSON.stringify({
+                level: "INFO",
+                message: "Dynamically allowing local origins",
                 port,
-                origins: [localOrigin1, localOrigin2],
-            });
+                origins: [localOrigin1, localOrigin2]
+            }));
 
             // --- 192.168.x.x origins ---
             for (const name of Object.keys(interfaces)) {
@@ -49,17 +52,21 @@ process.argv.slice(2).forEach((arg) => {
                     ) {
                         const localOrigin3 = `http://${address}:${port}`;
                         ALLOWED_ORIGINS.add(localOrigin3);
-                        log("info", "Dynamically allowing local network origin", {
+                        console.log(JSON.stringify({
+                            level: "INFO",
+                            message: "Dynamically allowing local network origin",
                             port,
-                            origin: localOrigin3,
-                        });
+                            origin: localOrigin3
+                        }));
                     }
                 }
             }
         } else {
-            log("warn", "Invalid port number provided for local origin", {
-                argument: arg,
-            });
+            console.warn(JSON.stringify({
+                level: "WARN",
+                message: "Invalid port number provided for local origin",
+                argument: arg
+            }));
         }
     }
 });
@@ -71,8 +78,6 @@ const config = {
 
     ALLOWED_ORIGINS: ALLOWED_ORIGINS,
 
-    // --- NEW: Add regex for Vercel preview URLs ---
-    // This will match URLs like: https://dropsilk-a1b2c3d-ahmed-arats-projects.vercel.app
     VERCEL_PREVIEW_ORIGIN_REGEX:
         /^https:\/\/dropsilk-[a-zA-Z0-9]+-ahmed-arats-projects\.vercel\.app$/,
 
@@ -84,16 +89,13 @@ const config = {
         process.env.LOG_ACCESS_KEY || "change-this-secret-key-in-production",
     MAX_LOG_BUFFER_SIZE: 1000,
 
-    // --- NEW: Use a single UploadThing Token ---
     UPLOADTHING_TOKEN: process.env.UPLOADTHING_TOKEN || "",
 
-    // --- NEW: Cloudflare TURN Server Credentials (keep secret) ---
     CLOUDFLARE_TURN_TOKEN_ID: process.env.CLOUDFLARE_TURN_TOKEN_ID || "",
     CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || "",
 
     NO_DB,
 
-    // --- NEW: reCAPTCHA and Contact Email ---
     recaptchaSecretKey: process.env.RECAPTCHA_SECRET_KEY || "",
     contactEmail: process.env.CONTACT_EMAIL || "",
 };

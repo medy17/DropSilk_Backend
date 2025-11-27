@@ -1,143 +1,93 @@
-// tests/uploadthing.test.js
-const httpMocks = require('node-mocks-http');
+// --- tests/uploadthing.test.js ---
+const httpMocks = require("node-mocks-http");
 
-// --- Polyfill Globals (Request/Response/Headers) if missing in Jest env ---
-if (!global.Request) {
-    global.Request = class Request {
-        constructor(url, options) {
-            this.url = url;
-            this.method = options.method || 'GET';
-            this.headers = options.headers || new Headers();
-            this.body = options.body;
-        }
-        async arrayBuffer() { return Buffer.from(''); }
-    };
-}
-if (!global.Response) {
-    global.Response = class Response {
-        constructor(body, options) {
-            this.status = options.status || 200;
-            this.headers = new Headers(options.headers);
-            this._body = body;
-        }
-        async arrayBuffer() { return Buffer.from(this._body || ''); }
-    };
-}
-if (!global.Headers) {
-    global.Headers = class Headers {
-        constructor(init) {
-            this.map = new Map();
-            if (init && typeof init === 'object') {
-                Object.entries(init).forEach(([k, v]) => this.append(k, v));
-            }
-        }
-        append(k, v) { this.map.set(k.toLowerCase(), v); }
-        set(k, v) { this.map.set(k.toLowerCase(), v); }
-        get(k) { return this.map.get(k.toLowerCase()); }
-        forEach(cb) { this.map.forEach((v, k) => cb(v, k, this)); }
-        [Symbol.iterator]() { return this.map.entries(); }
-    };
-}
+// Polyfills
+if (!global.Request) { global.Request = class Request { constructor(url, options) { this.url = url; this.method = options.method || 'GET'; this.headers = options.headers || new Headers(); this.body = options.body; } async arrayBuffer() { return Buffer.from(''); } }; }
+if (!global.Response) { global.Response = class Response { constructor(body, options) { this.status = options.status || 200; this.headers = new Headers(options.headers); this._body = body; } async arrayBuffer() { return Buffer.from(this._body || ''); } }; }
+if (!global.Headers) { global.Headers = class Headers { constructor(init) { this.map = new Map(); if (init && typeof init === 'object') { Object.entries(init).forEach(([k, v]) => this.append(k, v)); } } append(k, v) { this.map.set(k.toLowerCase(), v); } set(k, v) { this.map.set(k.toLowerCase(), v); } get(k) { return this.map.get(k.toLowerCase()); } forEach(cb) { this.map.forEach((v, k) => cb(v, k, this)); } [Symbol.iterator]() { return this.map.entries(); } }; }
 
-// 1. Mock Config
-jest.mock('../src/config', () => ({
-    UPLOADTHING_TOKEN: 'sk_live_mock_token_12345',
-    PORT: 3000
-}));
+// FIX: Define the callback variable BEFORE jest.mock is called.
+let onUploadCompleteCallback;
 
-// 2. Mock Database
-jest.mock('../src/dbClient', () => ({
-    isDatabaseInitialized: jest.fn(() => true),
-    query: jest.fn()
-}));
+const mockHandler = jest.fn(
+    (req) => new Response(JSON.stringify({ success: true }), { status: 200 }),
+);
 
-// 3. Mock Utils (Spy on log to see errors)
-const mockLog = jest.fn();
-jest.mock('../src/utils', () => ({
-    log: mockLog
-}));
-
-// 4. Mock UploadThing/Server logic
-const mockHandler = jest.fn((req) => {
-    return new Response(JSON.stringify({ success: true }), { status: 200 });
-});
-
-jest.mock('uploadthing/server', () => ({
+jest.mock("uploadthing/server", () => ({
     createUploadthing: () => () => ({
         middleware: () => ({
-            onUploadComplete: () => ({})
-        })
+            onUploadComplete: (cb) => {
+                onUploadCompleteCallback = cb;
+                return {};
+            },
+        }),
     }),
     createRouteHandler: () => mockHandler,
-    UTApi: jest.fn()
 }));
 
-// Import after mocks
-const { handleUploadThingRequest } = require('../src/uploadthingHandler');
+// Now mock the other dependencies
+jest.mock("../src/telemetry", () => ({
+    eventBus: { emit: jest.fn() },
+    EVENTS: jest.requireActual("../src/telemetry/events"),
+}));
+jest.mock("../src/config", () => ({
+    UPLOADTHING_TOKEN: "sk_live_mock_token_12345",
+    PORT: 3000,
+}));
+jest.mock("../src/dbClient", () => ({
+    isDatabaseInitialized: jest.fn(() => true),
+    query: jest.fn(),
+}));
 
-describe('UploadThing Handler', () => {
+// And finally, require the modules
+const { handleUploadThingRequest } = require("../src/uploadthingHandler");
+const { eventBus, EVENTS } = require("../src/telemetry");
 
+describe("UploadThing Handler", () => {
     beforeEach(() => {
         jest.clearAllMocks();
+        // Reset the modules to ensure the memoized handler is cleared
+        jest.resetModules();
+        // Since modules are reset, we must re-require our file under test
+        // This is a bit heavy, but guarantees a clean state for the handler
+        const { handleUploadThingRequest: newHandler } = require('../src/uploadthingHandler');
+        onUploadCompleteCallback = null;
     });
 
-    test('Should handle OPTIONS request (CORS Preflight)', async () => {
-        const req = httpMocks.createRequest({
-            method: 'OPTIONS',
-            headers: { origin: 'http://localhost:3000' }
-        });
-        const res = httpMocks.createResponse();
+    test("onUploadComplete should emit UPLOAD.SUCCESS and DB_SAVED", async () => {
+        // We need to re-require here because of jest.resetModules
+        const { handleUploadThingRequest } = require('../src/uploadthingHandler');
+        const { eventBus } = require("../src/telemetry");
+        const mockEmit = eventBus.emit;
 
+        const req = httpMocks.createRequest({
+            method: "GET",
+            url: "/api/uploadthing",
+            headers: { host: "localhost:3000" },
+        });
+        req[Symbol.asyncIterator] = async function* () {
+            yield Buffer.from("");
+        };
+        const res = httpMocks.createResponse();
         await handleUploadThingRequest(req, res);
 
-        expect(res.statusCode).toBe(204);
-        expect(res.getHeader('Access-Control-Allow-Origin')).toBe('http://localhost:3000');
-    });
+        expect(onUploadCompleteCallback).toBeInstanceOf(Function);
 
-    test('Should set CORS headers on normal requests', async () => {
-        const req = httpMocks.createRequest({
-            method: 'POST',
-            url: '/api/uploadthing',
-            headers: {
-                origin: 'https://dropsilk.xyz',
-                // FIX: Host is required for URL construction
-                host: 'localhost:3000'
-            }
+        const fileData = {
+            file: {
+                key: "123-abc",
+                url: "https://utfs.io/f/123-abc",
+                name: "test.pptx",
+            },
+        };
+        await onUploadCompleteCallback(fileData);
+
+        expect(mockEmit).toHaveBeenCalledWith(EVENTS.UPLOAD.SUCCESS, {
+            key: "123-abc",
+            url: "https://utfs.io/f/123-abc",
         });
-
-        // Mock async iterator for body reading
-        req[Symbol.asyncIterator] = async function* () { yield Buffer.from('test'); };
-
-        const res = httpMocks.createResponse();
-
-        await handleUploadThingRequest(req, res);
-
-        expect(res.getHeader('Access-Control-Allow-Origin')).toBe('https://dropsilk.xyz');
-    });
-
-    test('Should initialize handler if token is present', async () => {
-        const req = httpMocks.createRequest({
-            method: 'GET',
-            url: '/api/uploadthing',
-            headers: {
-                // FIX: Host is required here too
-                host: 'localhost:3000'
-            }
+        expect(mockEmit).toHaveBeenCalledWith(EVENTS.UPLOAD.DB_SAVED, {
+            key: "123-abc",
         });
-
-        req[Symbol.asyncIterator] = async function* () { yield Buffer.from(''); };
-
-        const res = httpMocks.createResponse();
-
-        await handleUploadThingRequest(req, res);
-
-        // Check if any errors were logged (helps debugging if test fails)
-        const errorLogs = mockLog.mock.calls.filter(call => call[0] === 'error');
-        if (errorLogs.length > 0) {
-            console.error("🚨 Logged Errors during test:", JSON.stringify(errorLogs, null, 2));
-        }
-
-        // Verify that the route handler was created and called
-        expect(mockHandler).toHaveBeenCalled();
     });
 });

@@ -1,12 +1,10 @@
 // --- src/cleanupService.js ---
 
 const { UTApi } = require("uploadthing/server");
-const { log } = require("./utils");
 const db = require("./dbClient");
-const config = require("./config");
+const { eventBus, EVENTS } = require("./telemetry");
 
-// We initialize UTApi here. It will automatically look for the
-// UPLOADTHING_TOKEN environment variable.
+// We initialize UTApi here.
 const utapi = new UTApi();
 
 const TWENTY_FOUR_HOURS_IN_MS = 24 * 60 * 60 * 1000;
@@ -14,11 +12,11 @@ const TWENTY_FOUR_HOURS_IN_MS = 24 * 60 * 60 * 1000;
 async function runCleanup() {
     // If the database is not initialized, we can't do anything.
     if (!db.isDatabaseInitialized()) {
-        log("info", "🧹 DB not initialized, skipping cleanup service run.");
+        eventBus.emit(EVENTS.CLEANUP.SKIPPED, {
+            reason: "DB not initialized",
+        });
         return;
     }
-
-    log("info", "🧹 Starting cleanup service run...");
 
     try {
         const cutOffDate = new Date(Date.now() - TWENTY_FOUR_HOURS_IN_MS);
@@ -30,63 +28,61 @@ async function runCleanup() {
         ]);
 
         if (filesToDelete.length === 0) {
-            log("info", "🧹 No old files to delete. All clean!");
+            eventBus.emit(EVENTS.CLEANUP.COMPLETE, {
+                count: 0,
+                message: "No files to clean",
+            });
             return;
         }
 
         const fileKeys = filesToDelete.map((file) => file.file_key);
-        log("info", `🧹 Found ${fileKeys.length} files to delete.`, {
+        eventBus.emit(EVENTS.CLEANUP.START, {
+            count: fileKeys.length,
             keys: fileKeys,
         });
 
         // 2. Delete the files from UploadThing
         const deleteResult = await utapi.deleteFiles(fileKeys);
 
-        // The UTApi returns { success: boolean }
         if (!deleteResult.success) {
-            log(
-                "error",
-                "🚨 Failed to delete files from UploadThing API",
-                { result: deleteResult }, // Log the actual result from the API
-            );
-            // Don't proceed to delete from DB if this crucial step fails
+            eventBus.emit(EVENTS.CLEANUP.ERROR, {
+                context: "UploadThing Deletion Failed",
+                result: deleteResult,
+            });
             return;
         }
-        log("info", "✅ Successfully deleted files from UploadThing.");
 
         // 3. Delete the records from OUR database
         const deleteQuery = `DELETE FROM uploaded_files WHERE file_key = ANY($1::text[])`;
         const deleteDbResult = await db.query(deleteQuery, [fileKeys]);
 
-        log(
-            "info",
-            `✅ Successfully removed ${deleteDbResult.rowCount} records from the database.`,
-        );
+        eventBus.emit(EVENTS.CLEANUP.COMPLETE, {
+            deletedCount: deleteDbResult.rowCount,
+        });
     } catch (error) {
-        log("error", "🚨 An error occurred during the cleanup process", {
+        eventBus.emit(EVENTS.CLEANUP.ERROR, {
             error: error.message,
             stack: error.stack,
         });
-    } finally {
-        log("info", "🧹 Cleanup service run finished.");
     }
 }
 
 function startCleanupService(intervalMinutes = 15) {
     if (!db.isDatabaseInitialized()) {
-        log(
-            "info",
-            "🧹 Cleanup service disabled (DB not initialised/disabled).",
-        );
+        eventBus.emit(EVENTS.CLEANUP.SKIPPED, {
+            reason: "Cleanup service disabled (DB not initialised/disabled).",
+        });
         return;
     }
-    log(
-        "info",
-        `🕒 Cleanup service scheduled to run every ${intervalMinutes} minutes.`,
-    );
-    // Run once on start to catch any old files, then set the interval
+
+    // We log/emit that the schedule is active
+    eventBus.emit(EVENTS.SYSTEM.STARTUP, {
+        service: "Cleanup Service",
+        interval: intervalMinutes,
+    });
+
     runCleanup();
     setInterval(runCleanup, intervalMinutes * 60 * 1000);
 }
 
-module.exports = { startCleanupService };
+module.exports = { startCleanupService, runCleanup };

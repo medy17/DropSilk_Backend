@@ -3,19 +3,15 @@
 const { Pool } = require("pg");
 const { log } = require("./utils");
 const config = require("./config");
+// We can try to use eventBus here, but it might be too early for listeners
+// So we stick to log for critical startup messages.
 
-// A connection pool is way better than a single client.
-// It manages multiple connections, so your server doesn't get bogged down
-// waiting for a free connection. It's faster and more resilient.
 let pool;
 let dbInitialized = false;
 
 // Honour --noDB / NO_DB
 if (config.NO_DB) {
-    log(
-        "info",
-        "🛑 Database disabled via --noDB/NO_DB. Skipping DB initialisation.",
-    );
+    log("info", "🛑 Database disabled via --noDB/NO_DB. Skipping DB initialisation.");
     dbInitialized = false;
 } else if (process.env.DATABASE_URL) {
     try {
@@ -26,7 +22,7 @@ if (config.NO_DB) {
             },
         });
         log("info", "🐘 Database connection pool created successfully.");
-        dbInitialized = true; // Mark DB as initialized
+        dbInitialized = true;
     } catch (error) {
         log("error", "🚨 Failed to create database connection pool", {
             error: error.message,
@@ -34,19 +30,12 @@ if (config.NO_DB) {
         process.exit(1);
     }
 } else {
-    log(
-        "warn",
-        "⚠️ DATABASE_URL not set. Database features will be disabled. Server Initialization will proceed but consider running with the --noDB argument if you want to run this server without a DB.",
-    );
+    log("warn", "⚠️ DATABASE_URL not set. Database features will be disabled.");
 }
 
-// A simple function to create our table if it doesn't already exist.
 const initializeDatabase = async () => {
     if (config.NO_DB) {
-        log(
-            "info",
-            "DB disabled via --noDB/NO_DB. Skipping table creation.",
-        );
+        log("info", "DB disabled via --noDB/NO_DB. Skipping table creation.");
         return;
     }
     if (!dbInitialized) {
@@ -76,15 +65,13 @@ const initializeDatabase = async () => {
 };
 
 module.exports = {
-    // Export the query function from the pool
     query: (text, params) => {
         if (!dbInitialized) {
-            log("error", "🚨 Database not initialized/disabled. Cannot perform query.");
-            // Throw an error or handle as you see fit
+            // Throwing is better for the service to catch and log via Event Bus
             throw new Error("Database is not available.");
         }
         return pool.query(text, params);
     },
     initializeDatabase,
-    isDatabaseInitialized: () => dbInitialized, // Export a way to check if DB is up
+    isDatabaseInitialized: () => dbInitialized,
 };
