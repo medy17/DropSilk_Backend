@@ -1,10 +1,10 @@
-// --- src/telemetry/eventBus.js ---
+// --- src/telemetry/eventBus.ts ---
 
-const EventEmitter = require("events");
+import { EventEmitter } from "events";
 
 class TelemetryBus extends EventEmitter {}
 
 // Singleton instance. This is the only instance the whole app will use.
 const eventBus = new TelemetryBus();
 
-module.exports = eventBus;
+export default eventBus;

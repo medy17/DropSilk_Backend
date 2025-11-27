@@ -1,10 +1,10 @@
-// --- src/telemetry/index.js ---
+// --- src/telemetry/index.ts ---
 
-const eventBus = require("./eventBus");
-const config = require("./config");
-const EVENTS = require("./events");
-const { log } = require("../utils"); // The bridge to your existing logger
-const storyManager = require("./storyManager");
+import eventBus from "./eventBus";
+import config from "./config";
+import EVENTS from "./events";
+import { log } from "../utils"; // The bridge to your existing logger
+import storyManager from "./storyManager";
 
 function initializeTelemetry() {
     // Initialize the story manager, which will set up its own listeners.
@@ -25,18 +25,16 @@ function initializeTelemetry() {
     log("info", "📡 Telemetry Architecture Initialized");
 }
 
-function handleEvent(eventName, payload) {
+function handleEvent(eventName: string, payload: any) {
     if (!config.enabled) return;
 
     // Immediate Logging (The "Console" aspect)
-    const logConfig = config.logs[eventName];
+    // We need a type assertion here because TS can't guarantee eventName is a key of config.logs
+    const logConfig = config.logs[eventName as keyof typeof config.logs];
     if (logConfig) {
         log(logConfig.level || "info", eventName, payload);
     }
 }
 
-module.exports = {
-    initializeTelemetry,
-    eventBus,
-    EVENTS,
-};
+// Re-exporting for easy access from other parts of the app
+export { initializeTelemetry, eventBus, EVENTS };

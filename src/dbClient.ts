@@ -1,17 +1,17 @@
-// --- src/dbClient.js ---
+// --- src/dbClient.ts ---
 
-const { Pool } = require("pg");
-const { log } = require("./utils");
-const config = require("./config");
-// We can try to use eventBus here, but it might be too early for listeners
-// So we stick to log for critical startup messages.
+import { Pool } from "pg";
+import { log } from "./utils";
+import config from "./config";
 
-let pool;
+let pool: Pool;
 let dbInitialized = false;
 
-// Honour --noDB / NO_DB
 if (config.NO_DB) {
-    log("info", "🛑 Database disabled via --noDB/NO_DB. Skipping DB initialisation.");
+    log(
+        "info",
+        "🛑 Database disabled via --noDB/NO_DB. Skipping DB initialisation.",
+    );
     dbInitialized = false;
 } else if (process.env.DATABASE_URL) {
     try {
@@ -23,7 +23,7 @@ if (config.NO_DB) {
         });
         log("info", "🐘 Database connection pool created successfully.");
         dbInitialized = true;
-    } catch (error) {
+    } catch (error: any) {
         log("error", "🚨 Failed to create database connection pool", {
             error: error.message,
         });
@@ -45,18 +45,18 @@ const initializeDatabase = async () => {
 
     const createTableQuery = `
         CREATE TABLE IF NOT EXISTS uploaded_files (
-                                                      id SERIAL PRIMARY KEY,
-                                                      file_key TEXT NOT NULL UNIQUE,
-                                                      file_url TEXT NOT NULL,
-                                                      file_name TEXT NOT NULL,
-                                                      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
+            id SERIAL PRIMARY KEY,
+            file_key TEXT NOT NULL UNIQUE,
+            file_url TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
     `;
 
     try {
         await pool.query(createTableQuery);
         log("info", "✅ Database table 'uploaded_files' is ready.");
-    } catch (err) {
+    } catch (err: any) {
         log("error", "🚨 Error initializing database table", {
             error: err.stack,
         });
@@ -64,10 +64,9 @@ const initializeDatabase = async () => {
     }
 };
 
-module.exports = {
-    query: (text, params) => {
+const dbClient = {
+    query: (text: string, params?: any[]) => {
         if (!dbInitialized) {
-            // Throwing is better for the service to catch and log via Event Bus
             throw new Error("Database is not available.");
         }
         return pool.query(text, params);
@@ -75,3 +74,5 @@ module.exports = {
     initializeDatabase,
     isDatabaseInitialized: () => dbInitialized,
 };
+
+export default dbClient;

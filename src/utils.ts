@@ -1,36 +1,31 @@
-// --- src/utils.js ---
+// --- src/utils.ts ---
 
-const os = require("os");
-const config = require("./config");
+import os from "os";
+import config from "./config";
+import type { IncomingMessage, Server } from "http";
 
-// --- NEW SELF-CONTAINED LOGGER ---
-const logs = new Array(config.MAX_LOG_BUFFER_SIZE);
+const logs: string[] = new Array(config.MAX_LOG_BUFFER_SIZE);
 let logPointer = 0;
 
-function log(level, message, meta = {}) {
-    // Create a structured log object
+export function log(
+    level: string,
+    message: string,
+    meta: Record<string, any> = {},
+) {
     const logObject = {
         timestamp: new Date().toISOString(),
         level: level.toUpperCase(),
         message,
-        ...meta, // Spread the metadata into the top level of the object
+        ...meta,
     };
-
-    // Convert the object to a JSON string for output
     const logEntry = JSON.stringify(logObject);
-
-    // This is the circular buffer logic. O(1) every time.
     logs[logPointer] = logEntry;
     logPointer = (logPointer + 1) % config.MAX_LOG_BUFFER_SIZE;
-
-    // Output to the console. This is what Render will capture.
     console.log(logEntry);
 }
 
-// New function for the /logs endpoint to call
-function getLogs() {
-    const sortedLogs = [];
-    // This "un-rolls" the circular buffer so it's in chronological order for display
+export function getLogs(): string[] {
+    const sortedLogs: string[] = [];
     for (let i = 0; i < config.MAX_LOG_BUFFER_SIZE; i++) {
         const log = logs[(logPointer + i) % config.MAX_LOG_BUFFER_SIZE];
         if (log) sortedLogs.push(log);
@@ -38,41 +33,52 @@ function getLogs() {
     return sortedLogs;
 }
 
-// --- IP Helpers ---
-function getClientIp(req) {
+export function getClientIp(req: IncomingMessage): string {
+    const xForwardedFor = req.headers["x-forwarded-for"];
     const rawIp =
-        req.headers["x-forwarded-for"]?.split(",").shift() ||
-        req.socket.remoteAddress;
+        (Array.isArray(xForwardedFor)
+            ? xForwardedFor[0]
+            : xForwardedFor?.split(",").shift()) || req.socket.remoteAddress;
     return getCleanIPv4(rawIp);
 }
 
-function getCleanIPv4(ip) {
-    if (!ip || typeof ip !== "string") return "unknown";
+export function getCleanIPv4(ip?: string): string {
+    if (!ip) return "unknown";
     if (ip.startsWith("::ffff:")) return ip.substring(7);
     if (ip === "::1") return "127.0.0.1";
     return ip;
 }
 
-function isPrivateIP(ip) {
-    if (!ip || typeof ip !== "string") return false;
+export function isPrivateIP(ip?: string): boolean {
+    if (!ip) return false;
     return (
         ip.startsWith("10.") ||
         ip.startsWith("192.168.") ||
-        ip.match(/^172\.(1[6-9]|2[0-9]|3[0-1])\./)
+        !!ip.match(/^172\.(1[6-9]|2[0-9]|3[0-1])\./)
     );
 }
 
-function getLocalIpForDisplay() {
-    // ... same as original ...
+export function getLocalIpForDisplay(): string {
+    const interfaces = os.networkInterfaces();
+    for (const name in interfaces) {
+        const ifaceGroup = interfaces[name];
+        if (!ifaceGroup) continue;
+        for (const iface of ifaceGroup) {
+            if (iface.family === "IPv4" && !iface.internal) {
+                return iface.address;
+            }
+        }
+    }
+    return "127.0.0.1";
 }
 
-// --- Graceful Shutdown ---
-function setupGracefulShutdown(server, closeWsConnectionsCallback) {
-    // <-- Accept a callback
+export function setupGracefulShutdown(
+    server: Server,
+    closeWsConnectionsCallback: () => void,
+) {
     const shutdown = () => {
         log("info", "Initiating graceful shutdown...");
 
-        // Use the provided callback function instead of requiring the module
         if (typeof closeWsConnectionsCallback === "function") {
             closeWsConnectionsCallback();
         }
@@ -90,26 +96,16 @@ function setupGracefulShutdown(server, closeWsConnectionsCallback) {
 
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
-    process.on("uncaughtException", (error) => {
+    process.on("uncaughtException", (error: Error) => {
         log("error", "UNCAUGHT EXCEPTION!", {
             error: error.message,
             stack: error.stack,
         });
         shutdown();
     });
-    process.on("unhandledRejection", (reason) => {
+    process.on("unhandledRejection", (reason: any) => {
         log("error", "UNHANDLED REJECTION!", {
             reason: reason?.toString() || "unknown",
         });
     });
 }
-
-module.exports = {
-    log,
-    getLogs,
-    getClientIp,
-    getCleanIPv4,
-    isPrivateIP,
-    getLocalIpForDisplay,
-    setupGracefulShutdown,
-};

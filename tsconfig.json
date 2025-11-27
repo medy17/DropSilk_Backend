@@ -1,0 +1,31 @@
+// --- tsconfig.json ---
+
+{
+  "compilerOptions": {
+    /* Base Options */
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+
+    /* Path Aliasing */
+    "baseUrl": ".",
+    "paths": {
+      "@src/*": ["src/*"]
+    },
+
+    /* Strictness */
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true, // <-- ADD THIS BASTARD
+
+    /* Output */
+    "outDir": "./dist",
+
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*", "server.ts"],
+  "exclude": ["node_modules", "tests"]
+}

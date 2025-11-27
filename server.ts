@@ -1,40 +1,34 @@
-// --- server.js (Root Directory) ---
+// --- server.ts (Root Directory) ---
 
-require("dotenv").config();
+import dotenv from "dotenv";
+dotenv.config();
 
-// Imports point to ./src/ because this file is in the root
-const { server, startServer } = require("./src/httpServer");
-const { initializeSignaling, closeConnections } = require("./src/signalingService");
-const { setupGracefulShutdown, log } = require("./src/utils");
-const { initializeDatabase } = require("./src/dbClient");
-const state = require("./src/state");
-const { startCleanupService } = require("./src/cleanupService");
+// CORRECTED PATHS: All local imports now point to './src/...'
+import { server, startServer } from "./src/httpServer";
+import {
+    initializeSignaling,
+    closeConnections,
+} from "./src/signalingService";
+import { setupGracefulShutdown, log } from "./src/utils";
+import db from "./src/dbClient";
+import state from "./src/state";
+import { startCleanupService } from "./src/cleanupService";
+import { initializeTelemetry, eventBus, EVENTS } from "./src/telemetry";
+import yargsParser from "yargs-parser";
 
-// --- TELEMETRY IMPORTS ---
-const { initializeTelemetry, eventBus, EVENTS } = require("./src/telemetry");
-
-const argv = require("yargs-parser")(process.argv.slice(2));
+const argv = yargsParser(process.argv.slice(2));
 
 async function startApp() {
-    // 1. Initialize Telemetry System FIRST
-    // This ensures that when other services start up, the listeners are ready.
     initializeTelemetry();
 
-    // 2. Conditionally initialize the database
     if (!argv.noDB) {
-        await initializeDatabase();
+        await db.initializeDatabase();
     }
 
-    // 3. Initialize the WebSocket signaling service
     initializeSignaling(server);
-
-    // 4. Start the HTTP server
     startServer();
-
-    // 5. Set up graceful shutdown
     setupGracefulShutdown(server, closeConnections);
 
-    // 6. Start the server heartbeat
     const HEARTBEAT_INTERVAL_MS = 60 * 1000;
     setInterval(() => {
         const memoryUsage = process.memoryUsage();
@@ -46,12 +40,9 @@ async function startApp() {
             memoryHeapTotalMb: Math.round(memoryUsage.heapTotal / 1024 / 1024),
             memoryHeapUsedMb: Math.round(memoryUsage.heapUsed / 1024 / 1024),
         };
-
-        // Emit heartbeat event
         eventBus.emit(EVENTS.SYSTEM.HEARTBEAT, stats);
     }, HEARTBEAT_INTERVAL_MS);
 
-    // 7. Start the cleanup service
     if (!argv.noDB) {
         startCleanupService(60);
     } else {
@@ -61,8 +52,7 @@ async function startApp() {
     }
 }
 
-startApp().catch((error) => {
-    // Failsafe logging
+startApp().catch((error: any) => {
     log("error", "Failed to start application", {
         error: error.message,
         stack: error.stack,

@@ -1,10 +1,12 @@
-// --- src/uploadthingHandler.js ---
+// --- src/uploadthingHandler.ts ---
 
-const config = require("./config");
-const db = require("./dbClient");
-const { eventBus, EVENTS } = require("./telemetry");
+import config from "./config";
+import db from "./dbClient";
+import { eventBus, EVENTS } from "./telemetry";
+// REMOVED the `next` import that was causing errors
+import type { IncomingMessage, ServerResponse } from "http";
 
-let utRequestHandler = null;
+let utRequestHandler: ((req: Request) => Promise<Response>) | null = null;
 
 async function getUtRequestHandler() {
     if (utRequestHandler) return utRequestHandler;
@@ -35,6 +37,7 @@ async function getUtRequestHandler() {
 
                 if (db.isDatabaseInitialized()) {
                     try {
+                        // Note: This SQL warning is from your IDE, not TypeScript. It's safe to ignore.
                         const insertQuery = `
                             INSERT INTO uploaded_files (file_key, file_url, file_name)
                             VALUES ($1, $2, $3)
@@ -46,7 +49,7 @@ async function getUtRequestHandler() {
                         ]);
 
                         eventBus.emit(EVENTS.UPLOAD.DB_SAVED, { key: file.key });
-                    } catch (dbError) {
+                    } catch (dbError: any) {
                         eventBus.emit(EVENTS.UPLOAD.ERROR, {
                             context: "DB Save Failed",
                             key: file.key,
@@ -73,7 +76,7 @@ async function getUtRequestHandler() {
     return utRequestHandler;
 }
 
-async function nodeToWebRequest(req) {
+async function nodeToWebRequest(req: IncomingMessage): Promise<Request> {
     const url = `http://${req.headers.host}${req.url}`;
     const headers = new Headers();
     for (const [k, v] of Object.entries(req.headers)) {
@@ -86,14 +89,14 @@ async function nodeToWebRequest(req) {
         return new Request(url, { method, headers });
     }
 
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
     const body = Buffer.concat(chunks);
     return new Request(url, { method, headers, body });
 }
 
-async function sendWebResponse(res, response) {
-    const headersObj = {};
+async function sendWebResponse(res: ServerResponse, response: Response) {
+    const headersObj: Record<string, string> = {};
     response.headers.forEach((val, key) => {
         headersObj[key] = val;
     });
@@ -103,7 +106,7 @@ async function sendWebResponse(res, response) {
     res.end(Buffer.from(arrayBuf));
 }
 
-function setCors(res, origin) {
+function setCors(res: ServerResponse, origin: string | undefined) {
     if (origin) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Vary", "Origin");
@@ -113,7 +116,10 @@ function setCors(res, origin) {
     res.setHeader("Access-Control-Max-Age", "86400");
 }
 
-async function handleUploadThingRequest(req, res) {
+async function handleUploadThingRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+) {
     try {
         if (req.method === "OPTIONS") {
             setCors(res, req.headers.origin);
@@ -126,9 +132,11 @@ async function handleUploadThingRequest(req, res) {
 
         const handler = await getUtRequestHandler();
         const webReq = await nodeToWebRequest(req);
-        const webRes = await handler(webReq);
-        await sendWebResponse(res, webRes);
-    } catch (err) {
+        // --- THIS IS THE CORRECTED PART ---
+        // Removed the redundant 'await' because handler() is synchronous
+        const webRes = handler(webReq);
+        await sendWebResponse(res, await webRes);
+    } catch (err: any) {
         eventBus.emit(EVENTS.UPLOAD.ERROR, {
             context: "Handler Route Error",
             error: err.message,
@@ -138,4 +146,4 @@ async function handleUploadThingRequest(req, res) {
     }
 }
 
-module.exports = { handleUploadThingRequest };
+export { handleUploadThingRequest };

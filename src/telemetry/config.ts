@@ -1,15 +1,47 @@
-// --- src/telemetry/config.js ---
+// --- src/telemetry/config.ts ---
 
-const EVENTS = require("./events");
+import EVENTS from "./events";
 
-module.exports = {
+// --- Type Definitions for our Story Engine ---
+
+// A story is a generic object, but we know it has these meta properties.
+type Story = {
+    meta: Record<string, any>;
+    participants: any[];
+    timeline: any[];
+    stats: Record<string, any>;
+    [key: string]: any; // Allows other properties
+};
+
+// Defines the configuration for a single event being tracked within a story.
+export interface TrackConfig { // <-- ADDED EXPORT
+    handler: (story: Story, payload: any) => void;
+    mapToContext?: string;
+}
+
+// Defines the configuration for a whole story.
+export interface StoryConfig { // <-- ADDED EXPORT
+    enabled: boolean;
+    contextKey: string;
+    trigger: string;
+    ender: string[];
+    track: Record<string, TrackConfig>;
+    create: (payload: any) => Story;
+}
+
+// Defines the shape of the entire telemetry configuration object.
+export interface TelemetryConfig { // <-- ADDED EXPORT
+    enabled: boolean;
+    logs: Record<string, { level: string }>;
+    stories: Record<string, StoryConfig>;
+}
+
+const config: TelemetryConfig = {
+    // ... rest of the file is unchanged ...
     // Master switch. Set to "false" to shut the whole telemetry system up.
     enabled: true,
 
     // Logging Configuration:
-    // This dictates what gets dumped to the console/memory-buffer immediately.
-    // If an event is NOT listed here, it's effectively "silent" in the standard logs,
-    // though it might still be picked up by a Story.
     logs: {
         // --- System ---
         [EVENTS.SYSTEM.STARTUP]: { level: "info" },
@@ -33,8 +65,6 @@ module.exports = {
         [EVENTS.FLIGHT.JOINED]: { level: "info" },
         [EVENTS.FLIGHT.ENDED]: { level: "info" },
         [EVENTS.FLIGHT.ERROR]: { level: "error" },
-        // Note: SIGNAL events are usually too noisy for standard logging,
-        // so we leave them out of 'logs' but keep them in 'stories'.
 
         // --- TURN ---
         [EVENTS.TURN.CREDENTIALS_ISSUED]: { level: "info" },
@@ -51,21 +81,14 @@ module.exports = {
     },
 
     // Story Configuration:
-    // Defines complex narratives built from multiple events over time.
     stories: {
         flight_story: {
             enabled: true,
-            // What property on the event payload links all events in a single story?
             contextKey: "flightCode",
-            // Which event starts a new story instance?
             trigger: EVENTS.FLIGHT.CREATED,
-            // Which event(s) cleanly end a story? Can be an array.
             ender: [EVENTS.FLIGHT.ENDED],
-            // Events to track and add to the story timeline.
             track: {
                 [EVENTS.FLIGHT.JOINED]: {
-                    // We'll run this function to update the story state.
-                    // This replaces the massive `updateStory` switch statement.
                     handler: (story, payload) => {
                         story.participants.push({
                             id: payload.joinerId,
@@ -90,9 +113,6 @@ module.exports = {
                     },
                 },
                 [EVENTS.CLIENT.DISCONNECTED]: {
-                    // This tells the manager: "When a DISCONNECTED event happens,
-                    // use its `flightCode` property to find the right story".
-                    // This makes context mapping explicit and robust.
                     mapToContext: "flightCode",
                     handler: (story, payload) => {
                         story.timeline.push({
@@ -103,11 +123,12 @@ module.exports = {
                     },
                 },
             },
-            // A function to create the initial state of the story object.
             create: (payload) => ({
                 meta: {
                     flightCode: payload.flightCode,
-                    startTime: new Date(payload.createdAt || Date.now()).toISOString(),
+                    startTime: new Date(
+                        payload.createdAt || Date.now(),
+                    ).toISOString(),
                     creatorId: payload.creatorId,
                     endTime: null,
                     endReason: null,
@@ -120,15 +141,7 @@ module.exports = {
                 },
             }),
         },
-        // You could now add another story here with zero code changes elsewhere!
-        // For example:
-        // user_session_story: {
-        //     enabled: true,
-        //     contextKey: 'clientId',
-        //     trigger: EVENTS.CLIENT.CONNECTED,
-        //     ender: [EVENTS.CLIENT.DISCONNECTED],
-        //     track: { ... },
-        //     create: (payload) => ({ ... })
-        // }
     },
 };
+
+export default config;

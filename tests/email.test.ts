@@ -1,32 +1,29 @@
-// --- tests/email.test.js ---
-const axios = require("axios");
-const httpMocks = require("node-mocks-http");
-const { handleRequestEmail } = require("../src/emailService");
+import axios from "axios";
+import httpMocks from "node-mocks-http";
+import { handleRequestEmail } from "@src/emailService";
 
-// Mock dependencies
 jest.mock("axios");
-jest.mock("../src/config", () => ({
+jest.mock("@src/config", () => ({
     recaptchaSecretKey: "mock-secret-key",
     contactEmail: "admin@example.com",
 }));
 
-// Mock the telemetry event bus
-// Define the mock inside the factory to avoid hoisting issues
-jest.mock("../src/telemetry", () => ({
-    eventBus: {
-        emit: jest.fn(),
-    },
-    EVENTS: jest.requireActual("../src/telemetry/events"),
-}));
-// Get a reference to the mock function AFTER the mock is in place
-const { eventBus, EVENTS } = require("../src/telemetry");
-const mockEmit = eventBus.emit;
+// Mock the telemetry index (SUT uses @src/telemetry)
+jest.mock("@src/telemetry", () => {
+    const realEvents = jest.requireActual("@src/telemetry/events").default;
+    return {
+        __esModule: true,
+        EVENTS: realEvents,
+        eventBus: { emit: jest.fn() },
+    };
+});
+
+import { eventBus, EVENTS } from "@src/telemetry";
+const mockedAxiosPost = axios.post as jest.Mock;
+const mockEmit = eventBus.emit as jest.Mock;
+const config = require("@src/config");
 
 describe("Email Service", () => {
-    beforeEach(() => {
-        mockEmit.mockClear();
-    });
-
     test("Should return 400 if token is missing", async () => {
         const req = httpMocks.createRequest({
             method: "POST",
@@ -51,7 +48,7 @@ describe("Email Service", () => {
         });
         const res = httpMocks.createResponse();
 
-        axios.post.mockResolvedValue({ data: { success: false } });
+        mockedAxiosPost.mockResolvedValue({ data: { success: false } });
 
         await handleRequestEmail(req, res);
 
@@ -68,7 +65,7 @@ describe("Email Service", () => {
         });
         const res = httpMocks.createResponse();
 
-        axios.post.mockResolvedValue({ data: { success: true } });
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } });
 
         await handleRequestEmail(req, res);
 
@@ -87,14 +84,15 @@ describe("Email Service", () => {
         const res = httpMocks.createResponse();
 
         const apiError = new Error("Network Error");
-        axios.post.mockRejectedValue(apiError);
+        mockedAxiosPost.mockRejectedValue(apiError);
 
         await handleRequestEmail(req, res);
 
         expect(res.statusCode).toBe(500);
-        expect(JSON.parse(res._getData())).toEqual({ error: "internal_error" });
+        expect(JSON.parse(res._getData())).toEqual({
+            error: "internal_error",
+        });
 
-        // Verify that the correct telemetry event was emitted
         expect(mockEmit).toHaveBeenCalledWith(EVENTS.EMAIL.ERROR, {
             context: "reCAPTCHA verification failed",
             error: "Network Error",
@@ -103,8 +101,7 @@ describe("Email Service", () => {
     });
 
     test("Should emit ERROR if contactEmail is not configured", async () => {
-        const config = require("../src/config");
-        config.contactEmail = ""; // Temporarily unset for this test
+        config.contactEmail = "";
 
         const req = httpMocks.createRequest({
             method: "POST",
@@ -113,7 +110,7 @@ describe("Email Service", () => {
         });
         const res = httpMocks.createResponse();
 
-        axios.post.mockResolvedValue({ data: { success: true } });
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } });
         await handleRequestEmail(req, res);
 
         expect(res.statusCode).toBe(500);
@@ -121,6 +118,6 @@ describe("Email Service", () => {
             error: "server_not_configured",
         });
 
-        config.contactEmail = "admin@example.com"; // Restore
+        config.contactEmail = "admin@example.com";
     });
 });

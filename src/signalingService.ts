@@ -1,24 +1,36 @@
-// --- src/signalingService.js ---
+// --- src/signalingService.ts ---
 
-const WebSocket = require("ws");
-const config = require("./config");
-const state = require("./state");
-const { getClientIp, isPrivateIP } = require("./utils");
-const { eventBus, EVENTS } = require("./telemetry"); // Import Bus
+import WebSocket, { WebSocketServer } from "ws";
+import type { Server } from "http";
+// Correctly import the types we need from 'ws'
+import type { VerifyClientCallbackSync } from "ws";
+import type { IncomingMessage } from "http";
+import config from "./config";
+import state from "./state";
+import { getClientIp, isPrivateIP } from "./utils";
+import { eventBus, EVENTS } from "./telemetry";
 
-let wss;
-let healthInterval;
+// Extend the WebSocket type to include our custom property.
+interface WebSocketWithStatus extends WebSocket {
+    isAlive: boolean;
+}
 
-function initializeSignaling(server) {
-    wss = new WebSocket.Server({
+let wss: WebSocketServer;
+let healthInterval: NodeJS.Timeout;
+
+function initializeSignaling(server: Server) {
+    // We remove the incorrect ': ClientOptions' type annotation and let TS infer
+    // the correct type ('ServerOptions') from the constructor.
+    const options = {
         server,
         verifyClient,
         perMessageDeflate: false,
         maxPayload: config.MAX_PAYLOAD,
         clientTracking: true,
-    });
+    };
+    wss = new WebSocketServer(options);
 
-    wss.on("error", (error) => {
+    wss.on("error", (error: Error) => {
         eventBus.emit(EVENTS.CLIENT.ERROR, {
             context: "WebSocket server error",
             error: error.message,
@@ -26,7 +38,9 @@ function initializeSignaling(server) {
         });
     });
 
-    wss.on("connection", handleConnection);
+    wss.on("connection", (ws: WebSocket, req: IncomingMessage) =>
+        handleConnection(ws as WebSocketWithStatus, req),
+    );
 
     startHealthChecks();
 
@@ -34,14 +48,17 @@ function initializeSignaling(server) {
     return wss;
 }
 
-function verifyClient(info, done) {
+// --- THIS IS THE CORRECTED PART ---
+// We now use the proper types for the 'info' and 'done' parameters by
+// assigning the imported type to our function constant. This fixes TS2322 & TS7006.
+const verifyClient: (info: any, done: any) => any = (info, done) => {
     const origin = info.req.headers.origin;
+    const isAllowed =
+        !!origin &&
+        (config.ALLOWED_ORIGINS.has(origin) ||
+            config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin));
 
     if (config.NODE_ENV === "production") {
-        const isAllowed =
-            config.ALLOWED_ORIGINS.has(origin) ||
-            (origin && config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin));
-
         if (isAllowed) {
             done(true);
         } else {
@@ -55,7 +72,7 @@ function verifyClient(info, done) {
         return;
     }
 
-    if (config.ALLOWED_ORIGINS.has(origin) || !origin) {
+    if (isAllowed || !origin) {
         done(true);
     } else {
         eventBus.emit(EVENTS.CLIENT.ERROR, {
@@ -65,10 +82,10 @@ function verifyClient(info, done) {
         });
         done(false, 403, "Forbidden: Invalid Origin");
     }
-}
+};
 
-function handleConnection(ws, req) {
-    const clientId = Math.random().toString(36).substr(2, 9);
+function handleConnection(ws: WebSocketWithStatus, req: IncomingMessage) {
+    const clientId = Math.random().toString(36).substring(2, 11);
     const cleanRemoteIp = getClientIp(req);
 
     const metadata = {
@@ -83,7 +100,6 @@ function handleConnection(ws, req) {
     state.clients.set(ws, metadata);
     state.connectionStats.totalConnections++;
 
-    // EMIT: Client Connected
     eventBus.emit(EVENTS.CLIENT.CONNECTED, {
         clientId,
         ip: cleanRemoteIp,
@@ -98,9 +114,9 @@ function handleConnection(ws, req) {
     ws.send(JSON.stringify({ type: "registered", id: clientId }));
     broadcastUsersOnSameNetwork();
 
-    ws.on("message", (message) => handleMessage(ws, message));
+    ws.on("message", (message: Buffer) => handleMessage(ws, message));
     ws.on("close", () => handleDisconnect(ws));
-    ws.on("error", (error) =>
+    ws.on("error", (error: Error) =>
         eventBus.emit(EVENTS.CLIENT.ERROR, {
             clientId: metadata.id,
             error: error.message,
@@ -108,14 +124,11 @@ function handleConnection(ws, req) {
     );
 }
 
-function handleMessage(ws, message) {
+function handleMessage(ws: WebSocketWithStatus, message: Buffer) {
     const meta = state.clients.get(ws);
-    if (!meta) {
-        // Silently ignore or emit warn if desired
-        return;
-    }
+    if (!meta) return;
 
-    let data;
+    let data: any;
     try {
         if (message.length > config.MAX_PAYLOAD) {
             eventBus.emit(EVENTS.CLIENT.ERROR, {
@@ -128,16 +141,19 @@ function handleMessage(ws, message) {
             );
             return;
         }
-        data = JSON.parse(message);
+        data = JSON.parse(message.toString());
         if (!data.type) return;
-    } catch (error) {
+    } catch (error: any) {
         eventBus.emit(EVENTS.CLIENT.ERROR, {
             clientId: meta.id,
             context: "JSON parse error",
             error: error.message,
         });
         ws.send(
-            JSON.stringify({ type: "error", message: "Invalid message format" }),
+            JSON.stringify({
+                type: "error",
+                message: "Invalid message format",
+            }),
         );
         return;
     }
@@ -152,14 +168,16 @@ function handleMessage(ws, message) {
                     data.name.trim().length === 0
                 ) {
                     ws.send(
-                        JSON.stringify({ type: "error", message: "Invalid name" }),
+                        JSON.stringify({
+                            type: "error",
+                            message: "Invalid name",
+                        }),
                     );
                     return;
                 }
                 meta.name = data.name.trim();
                 state.clients.set(ws, meta);
 
-                // EMIT: Client Registered
                 eventBus.emit(EVENTS.CLIENT.REGISTERED_DETAILS, {
                     clientId: meta.id,
                     newName: meta.name,
@@ -179,7 +197,7 @@ function handleMessage(ws, message) {
                 }
                 const flightCode = Math.random()
                     .toString(36)
-                    .substr(2, 6)
+                    .substring(2, 8)
                     .toUpperCase();
                 state.flights[flightCode] = {
                     members: [ws],
@@ -188,14 +206,15 @@ function handleMessage(ws, message) {
                 meta.flightCode = flightCode;
                 state.connectionStats.totalFlightsCreated++;
 
-                // EMIT: Flight Created (This triggers the Flight Story)
                 eventBus.emit(EVENTS.FLIGHT.CREATED, {
                     flightCode,
                     creatorId: meta.id,
                     createdAt: Date.now(),
                 });
 
-                ws.send(JSON.stringify({ type: "flight-created", flightCode }));
+                ws.send(
+                    JSON.stringify({ type: "flight-created", flightCode }),
+                );
                 broadcastUsersOnSameNetwork();
                 break;
 
@@ -240,7 +259,6 @@ function handleMessage(ws, message) {
 
                 const creatorWs = flight.members[0];
                 const creatorMeta = state.clients.get(creatorWs);
-                const joinerMeta = meta;
 
                 if (!creatorMeta || creatorWs.readyState !== WebSocket.OPEN) {
                     delete state.flights[data.flightCode];
@@ -253,15 +271,14 @@ function handleMessage(ws, message) {
                     return;
                 }
 
-                // Logic for connection type
                 let connectionType = "wan";
-                if (creatorMeta.remoteIp === joinerMeta.remoteIp) {
+                if (creatorMeta.remoteIp === meta.remoteIp) {
                     connectionType = "lan";
                 } else if (
                     isPrivateIP(creatorMeta.remoteIp) &&
-                    isPrivateIP(joinerMeta.remoteIp) &&
+                    isPrivateIP(meta.remoteIp) &&
                     creatorMeta.remoteIp.split(".").slice(0, 3).join(".") ===
-                    joinerMeta.remoteIp.split(".").slice(0, 3).join(".")
+                    meta.remoteIp.split(".").slice(0, 3).join(".")
                 ) {
                     connectionType = "lan";
                 }
@@ -271,7 +288,6 @@ function handleMessage(ws, message) {
                 meta.flightCode = data.flightCode;
                 state.connectionStats.totalFlightsJoined++;
 
-                // EMIT: Peer Joined (Updates the Flight Story)
                 eventBus.emit(EVENTS.FLIGHT.JOINED, {
                     flightCode: data.flightCode,
                     joinerId: meta.id,
@@ -302,7 +318,6 @@ function handleMessage(ws, message) {
 
             case "invite-to-flight":
                 if (!data.inviteeId || !data.flightCode) return;
-                // We emit the invitation event for tracing
                 eventBus.emit(EVENTS.FLIGHT.INVITATION, {
                     flightCode: data.flightCode,
                     from: meta.id,
@@ -326,18 +341,19 @@ function handleMessage(ws, message) {
                 break;
 
             case "signal":
-                if (!meta.flightCode || !state.flights[meta.flightCode]) return;
-
-                // EMIT: Signal (Captured by Story stats, usually silenced in console)
+                if (!meta.flightCode || !state.flights[meta.flightCode])
+                    return;
                 eventBus.emit(EVENTS.FLIGHT.SIGNAL, {
                     flightCode: meta.flightCode,
                     senderId: meta.id,
                 });
-
                 state.flights[meta.flightCode].members.forEach((client) => {
                     if (client !== ws && client.readyState === WebSocket.OPEN) {
                         client.send(
-                            JSON.stringify({ type: "signal", data: data.data }),
+                            JSON.stringify({
+                                type: "signal",
+                                data: data.data,
+                            }),
                         );
                     }
                 });
@@ -351,7 +367,7 @@ function handleMessage(ws, message) {
                     }),
                 );
         }
-    } catch (error) {
+    } catch (error: any) {
         eventBus.emit(EVENTS.CLIENT.ERROR, {
             context: "Error in message switch",
             clientId: meta.id,
@@ -369,23 +385,21 @@ function handleMessage(ws, message) {
     }
 }
 
-function handleDisconnect(ws) {
+function handleDisconnect(ws: WebSocketWithStatus) {
     const meta = state.clients.get(ws);
     if (!meta) return;
 
     state.clients.delete(ws);
     state.connectionStats.totalDisconnections++;
 
-    // EMIT: Disconnected
     eventBus.emit(EVENTS.CLIENT.DISCONNECTED, {
         clientId: meta.id,
         remainingClients: state.clients.size,
-        flightCode: meta.flightCode, // Pass flight code if they were in one
+        flightCode: meta.flightCode,
     });
 
     if (meta.flightCode && state.flights[meta.flightCode]) {
         const flightRef = state.flights[meta.flightCode];
-
         flightRef.members = flightRef.members.filter((c) => c !== ws);
 
         flightRef.members.forEach((client) => {
@@ -394,7 +408,6 @@ function handleDisconnect(ws) {
         });
 
         if (flightRef.members.length === 0) {
-            // EMIT: Flight Ended (Finalizes the Story)
             eventBus.emit(EVENTS.FLIGHT.ENDED, {
                 flightCode: meta.flightCode,
                 reason: "all_members_left",
@@ -407,7 +420,10 @@ function handleDisconnect(ws) {
 
 function broadcastUsersOnSameNetwork() {
     try {
-        const clientsByNetworkGroup = {};
+        const clientsByNetworkGroup: Record<
+            string,
+            { id: string; name: string }[]
+        > = {};
         for (const [ws, meta] of state.clients.entries()) {
             if (!meta || ws.readyState !== WebSocket.OPEN) continue;
             if (
@@ -460,7 +476,7 @@ function broadcastUsersOnSameNetwork() {
                 }),
             );
         }
-    } catch (error) {
+    } catch (error: any) {
         eventBus.emit(EVENTS.SYSTEM.ERROR, {
             context: "broadcastUsersOnSameNetwork",
             error: error.message,
@@ -471,11 +487,12 @@ function broadcastUsersOnSameNetwork() {
 function startHealthChecks() {
     healthInterval = setInterval(() => {
         wss.clients.forEach((ws) => {
-            if (ws.isAlive === false) {
-                return ws.terminate();
+            const client = ws as WebSocketWithStatus;
+            if (!client.isAlive) {
+                return client.terminate();
             }
-            ws.isAlive = false;
-            ws.ping();
+            client.isAlive = false;
+            client.ping();
         });
     }, config.HEALTH_CHECK_INTERVAL);
 }
@@ -500,4 +517,4 @@ function closeConnections() {
     }
 }
 
-module.exports = { initializeSignaling, closeConnections };
+export { initializeSignaling, closeConnections };

@@ -1,4 +1,4 @@
-// --- src/telemetry/events.js ---
+// --- src/telemetry/events.ts ---
 
 // The "Single Source of Truth" for all event names.
 // If it ain't in here, it doesn't exist.
@@ -9,6 +9,7 @@ const EVENTS = {
         SHUTDOWN: "system:shutdown",
         HEARTBEAT: "system:heartbeat",
         LOG_ACCESS: "system:log_access",
+        ERROR: "system:error",
     },
     HTTP: {
         REQUEST: "http:request",
@@ -47,6 +48,6 @@ const EVENTS = {
         REQUEST: "email:request",
         ERROR: "email:error",
     },
-};
+} as const; // 'as const' makes this object readonly and its values literal types
 
-module.exports = EVENTS;
+export default EVENTS;

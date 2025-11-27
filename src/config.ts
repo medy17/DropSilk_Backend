@@ -1,11 +1,12 @@
-// --- src/config.js ---
+// --- src/config.ts ---
 
-const os = require("os");
-const interfaces = os.networkInterfaces();
-// REMOVED: const { log } = require("./utils"); <--- CAUSED THE CYCLE
+import os from "os";
+// NOTE: We've removed the `log` import to prevent circular dependencies.
+// We use `console.log` directly in this file for startup messages.
+import yargsParser from "yargs-parser";
 
 // Parse CLI flags once and expose NO_DB in config
-const argv = require("yargs-parser")(process.argv.slice(2));
+const argv = yargsParser(process.argv.slice(2));
 const NO_DB =
     Boolean(argv.noDB) ||
     ["1", "true"].includes(String(process.env.NO_DB).toLowerCase());
@@ -18,7 +19,7 @@ const baseAllowedOrigins = [
     "app://.",
 ];
 
-const ALLOWED_ORIGINS = new Set(baseAllowedOrigins);
+const ALLOWED_ORIGINS = new Set<string>(baseAllowedOrigins);
 const localPortArgPrefix = "--allow-local-port=";
 
 process.argv.slice(2).forEach((arg) => {
@@ -33,17 +34,20 @@ process.argv.slice(2).forEach((arg) => {
             ALLOWED_ORIGINS.add(localOrigin1);
             ALLOWED_ORIGINS.add(localOrigin2);
 
-            // Use console.log here to avoid circular dependency with utils.js
-            console.log(JSON.stringify({
-                level: "INFO",
-                message: "Dynamically allowing local origins",
-                port,
-                origins: [localOrigin1, localOrigin2]
-            }));
+            console.log(
+                JSON.stringify({
+                    level: "INFO",
+                    message: "Dynamically allowing local origins",
+                    port,
+                    origins: [localOrigin1, localOrigin2],
+                }),
+            );
 
-            // --- 192.168.x.x origins ---
+            const interfaces = os.networkInterfaces();
             for (const name of Object.keys(interfaces)) {
-                for (const iface of interfaces[name]) {
+                const ifaceGroup = interfaces[name];
+                if (!ifaceGroup) continue;
+                for (const iface of ifaceGroup) {
                     const { address, family, internal } = iface;
                     if (
                         family === "IPv4" &&
@@ -52,21 +56,26 @@ process.argv.slice(2).forEach((arg) => {
                     ) {
                         const localOrigin3 = `http://${address}:${port}`;
                         ALLOWED_ORIGINS.add(localOrigin3);
-                        console.log(JSON.stringify({
-                            level: "INFO",
-                            message: "Dynamically allowing local network origin",
-                            port,
-                            origin: localOrigin3
-                        }));
+                        console.log(
+                            JSON.stringify({
+                                level: "INFO",
+                                message:
+                                    "Dynamically allowing local network origin",
+                                port,
+                                origin: localOrigin3,
+                            }),
+                        );
                     }
                 }
             }
         } else {
-            console.warn(JSON.stringify({
-                level: "WARN",
-                message: "Invalid port number provided for local origin",
-                argument: arg
-            }));
+            console.warn(
+                JSON.stringify({
+                    level: "WARN",
+                    message: "Invalid port number provided for local origin",
+                    argument: arg,
+                }),
+            );
         }
     }
 });
@@ -100,4 +109,4 @@ const config = {
     contactEmail: process.env.CONTACT_EMAIL || "",
 };
 
-module.exports = config;
+export default config;

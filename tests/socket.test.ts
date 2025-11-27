@@ -1,16 +1,17 @@
-// --- tests/socket.test.js ---
-const WebSocket = require("ws");
-const http = require("http");
+import WebSocket, { WebSocketServer } from "ws";
+import http, { Server } from "http";
+import { ClientMetadata } from "@src/state";
 
-// 1. Mock Config & Dependencies
-const mockEmit = jest.fn();
-jest.mock("../src/telemetry", () => ({
-    eventBus: { emit: mockEmit },
-    EVENTS: jest.requireActual("../src/telemetry/events"),
-}));
-const { EVENTS } = require("../src/telemetry");
+jest.mock("@src/telemetry", () => {
+    const realEvents = jest.requireActual("@src/telemetry/events").default;
+    return {
+        __esModule: true,
+        EVENTS: realEvents,
+        eventBus: { emit: jest.fn() },
+    };
+});
 
-jest.mock("../src/config", () => ({
+jest.mock("@src/config", () => ({
     PORT: 0,
     MAX_PAYLOAD: 1024,
     HEALTH_CHECK_INTERVAL: 1000,
@@ -19,36 +20,41 @@ jest.mock("../src/config", () => ({
     VERCEL_PREVIEW_ORIGIN_REGEX: /.*/,
 }));
 
-jest.mock("../src/uploadthingHandler", () => ({
+jest.mock("@src/uploadthingHandler", () => ({
     handleUploadThingRequest: jest.fn(),
 }));
 
-jest.mock("../src/dbClient", () => ({
+jest.mock("@src/dbClient", () => ({
     isDatabaseInitialized: () => false,
     query: jest.fn(),
 }));
 
-// 2. Import dependencies
-const {
+import {
     initializeSignaling,
     closeConnections,
-} = require("../src/signalingService");
-const state = require("../src/state");
+} from "@src/signalingService";
+import state from "@src/state";
+import { eventBus, EVENTS } from "@src/telemetry";
+const mockEmit = eventBus.emit as jest.Mock;
 
-let server;
-let wsServer;
-let port;
-const clients = [];
+interface TestWebSocket extends WebSocket {
+    messageBuffer: any[];
+}
+
+let server: Server;
+let wsServer: WebSocketServer;
+let port: number;
+const clients: TestWebSocket[] = [];
 const TEST_HOST = "127.0.0.1";
 
-// --- Robust Client Helper with Message Buffering ---
-const createClient = () => {
-    // (This helper function is unchanged and perfect, no need to modify it)
-    const ws = new WebSocket(`ws://${TEST_HOST}:${port}`);
+const createClient = (): Promise<TestWebSocket> => {
+    const ws = new WebSocket(
+        `ws://${TEST_HOST}:${port}`,
+    ) as TestWebSocket;
     ws.messageBuffer = [];
     ws.on("message", (data) => {
         try {
-            const parsed = JSON.parse(data);
+            const parsed = JSON.parse(data.toString());
             ws.messageBuffer.push(parsed);
             ws.emit("buffered_message", parsed);
         } catch (e) {
@@ -62,11 +68,11 @@ const createClient = () => {
     });
 };
 
-// --- Robust Message Waiter ---
-const waitForMessage = (ws, type) => {
-    // (This helper function is also perfect as is)
+const waitForMessage = (ws: TestWebSocket, type: string): Promise<any> => {
     return new Promise((resolve, reject) => {
-        const bufferedIndex = ws.messageBuffer.findIndex((m) => m.type === type);
+        const bufferedIndex = ws.messageBuffer.findIndex(
+            (m) => m.type === type,
+        );
         if (bufferedIndex !== -1) {
             const msg = ws.messageBuffer[bufferedIndex];
             ws.messageBuffer.splice(0, bufferedIndex + 1);
@@ -76,7 +82,7 @@ const waitForMessage = (ws, type) => {
             cleanup();
             reject(new Error(`Timeout waiting for message type: "${type}"`));
         }, 3000);
-        const listener = (msg) => {
+        const listener = (msg: any) => {
             if (msg.type === type) {
                 cleanup();
                 resolve(msg);
@@ -97,13 +103,17 @@ describe("Signaling Service (WebSocket)", () => {
         server = http.createServer();
         wsServer = initializeSignaling(server);
         server.listen(0, TEST_HOST, () => {
-            port = server.address().port;
+            const address = server.address();
+            if (typeof address === "string" || !address) {
+                throw new Error("Failed to get server address");
+            }
+            port = address.port;
             done();
         });
     });
 
     afterEach(() => {
-        mockEmit.mockClear(); // Clear the mock emit function after each test
+        // THE FIX: Remove the incorrect `.default`
         state.clients.clear();
         for (const key in state.flights) delete state.flights[key];
         clients.forEach((c) => {
@@ -138,12 +148,15 @@ describe("Signaling Service (WebSocket)", () => {
         const regMsg = await waitForMessage(ws, "registered");
 
         ws.send(JSON.stringify({ type: "register-details", name: "TestUser" }));
-        await new Promise((r) => setTimeout(r, 50)); // allow server to process
+        await new Promise((r) => setTimeout(r, 50));
 
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.CLIENT.REGISTERED_DETAILS, {
-            clientId: regMsg.id,
-            newName: "TestUser",
-        });
+        expect(mockEmit).toHaveBeenCalledWith(
+            EVENTS.CLIENT.REGISTERED_DETAILS,
+            {
+                clientId: regMsg.id,
+                newName: "TestUser",
+            },
+        );
     });
 
     test("Full Flight Flow: Should emit correct events", async () => {
@@ -153,9 +166,10 @@ describe("Signaling Service (WebSocket)", () => {
         await waitForMessage(host, "registered");
         host.send(JSON.stringify({ type: "register-details", name: "Host" }));
         await waitForMessage(joiner, "registered");
-        joiner.send(JSON.stringify({ type: "register-details", name: "Joiner" }));
+        joiner.send(
+            JSON.stringify({ type: "register-details", name: "Joiner" }),
+        );
 
-        // Create
         host.send(JSON.stringify({ type: "create-flight" }));
         const flightMsg = await waitForMessage(host, "flight-created");
         const flightCode = flightMsg.flightCode;
@@ -164,7 +178,6 @@ describe("Signaling Service (WebSocket)", () => {
             expect.objectContaining({ flightCode }),
         );
 
-        // Join
         joiner.send(JSON.stringify({ type: "join-flight", flightCode }));
         await waitForMessage(host, "peer-joined");
         expect(mockEmit).toHaveBeenCalledWith(
@@ -172,7 +185,6 @@ describe("Signaling Service (WebSocket)", () => {
             expect.objectContaining({ flightCode, joinerName: "Joiner" }),
         );
 
-        // Signal
         const signalData = { sdp: "mock-sdp-data" };
         host.send(JSON.stringify({ type: "signal", data: signalData }));
         await waitForMessage(joiner, "signal");
@@ -189,9 +201,11 @@ describe("Signaling Service (WebSocket)", () => {
         const msg = await waitForMessage(host, "flight-created");
         const code = msg.flightCode;
 
-        const hostMeta = Array.from(state.clients.values())[0];
+        // THE FIX: Give hostMeta a proper type to stop TypeScript from crying
+        const hostMeta = Array.from(
+            state.clients.values(),
+        )[0] as ClientMetadata;
 
-        // Disconnect
         host.terminate();
         await new Promise((r) => setTimeout(r, 100));
 
