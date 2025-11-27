@@ -55,14 +55,80 @@ module.exports = {
     stories: {
         flight_story: {
             enabled: true,
+            // What property on the event payload links all events in a single story?
+            contextKey: "flightCode",
+            // Which event starts a new story instance?
             trigger: EVENTS.FLIGHT.CREATED,
-            ender: EVENTS.FLIGHT.ENDED,
-            // Events that we want to "listen" for if they have the matching flightCode
-            track: [
-                EVENTS.FLIGHT.JOINED,
-                EVENTS.FLIGHT.SIGNAL,
-                EVENTS.CLIENT.DISCONNECTED, // We'll map this to the flight context in StoryManager
-            ],
+            // Which event(s) cleanly end a story? Can be an array.
+            ender: [EVENTS.FLIGHT.ENDED],
+            // Events to track and add to the story timeline.
+            track: {
+                [EVENTS.FLIGHT.JOINED]: {
+                    // We'll run this function to update the story state.
+                    // This replaces the massive `updateStory` switch statement.
+                    handler: (story, payload) => {
+                        story.participants.push({
+                            id: payload.joinerId,
+                            name: payload.joinerName,
+                            ip: payload.ip,
+                            connectionType: payload.connectionType,
+                            joinedAt: new Date().toISOString(),
+                        });
+                        story.timeline.push({
+                            event: "peer_joined",
+                            timestamp: new Date().toISOString(),
+                            details: {
+                                name: payload.joinerName,
+                                type: payload.connectionType,
+                            },
+                        });
+                    },
+                },
+                [EVENTS.FLIGHT.SIGNAL]: {
+                    handler: (story, payload) => {
+                        story.stats.signalsExchanged++;
+                    },
+                },
+                [EVENTS.CLIENT.DISCONNECTED]: {
+                    // This tells the manager: "When a DISCONNECTED event happens,
+                    // use its `flightCode` property to find the right story".
+                    // This makes context mapping explicit and robust.
+                    mapToContext: "flightCode",
+                    handler: (story, payload) => {
+                        story.timeline.push({
+                            event: "participant_disconnected",
+                            timestamp: new Date().toISOString(),
+                            clientId: payload.clientId,
+                        });
+                    },
+                },
+            },
+            // A function to create the initial state of the story object.
+            create: (payload) => ({
+                meta: {
+                    flightCode: payload.flightCode,
+                    startTime: new Date(payload.createdAt || Date.now()).toISOString(),
+                    creatorId: payload.creatorId,
+                    endTime: null,
+                    endReason: null,
+                },
+                participants: [],
+                timeline: [],
+                stats: {
+                    signalsExchanged: 0,
+                    durationSeconds: 0,
+                },
+            }),
         },
+        // You could now add another story here with zero code changes elsewhere!
+        // For example:
+        // user_session_story: {
+        //     enabled: true,
+        //     contextKey: 'clientId',
+        //     trigger: EVENTS.CLIENT.CONNECTED,
+        //     ender: [EVENTS.CLIENT.DISCONNECTED],
+        //     track: { ... },
+        //     create: (payload) => ({ ... })
+        // }
     },
 };

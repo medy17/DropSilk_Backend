@@ -1,139 +1,159 @@
 // --- src/telemetry/storyManager.js ---
 
-const EVENTS = require("./events");
-const { log } = require("../utils"); // We use the existing logger to output the FINAL story
+const { log } = require("../utils");
+const eventBus = require("./eventBus");
 
-// Map to hold active flight stories.
-// Key: flightCode, Value: Story Object
-const activeStories = new Map();
-
-const ONE_HOUR_MS = 60 * 60 * 1000;
-// FIX: A 24-hour max age is asking for a memory leak. 2 hours is plenty.
-const MAX_STORY_AGE_MS = 2 * ONE_HOUR_MS;
+const MAX_STORY_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 class StoryManager {
     constructor() {
-        // FIX: Run garbage collection every 10 mins, not once an hour.
-        setInterval(() => this.cleanupStaleStories(), 10 * 60 * 1000);
+        this.storyTrackers = new Map(); // Key: storyName, Value: tracker object
+        this.cleanupIntervalId = null; // To hold the ID of our setInterval
     }
 
-    processEvent(eventName, payload) {
-        // 1. START: Is this a Trigger?
-        if (eventName === EVENTS.FLIGHT.CREATED) {
-            this.startStory(payload);
-            return;
+    // This is the new entry point, called once from telemetry/index.js
+    initialize(storiesConfig) {
+        for (const storyName in storiesConfig) {
+            const config = storiesConfig[storyName];
+            if (!config.enabled) continue;
+
+            this.createTracker(storyName, config);
         }
 
-        // 2. CONTEXT: We need a flightCode to do anything else
-        const { flightCode } = payload;
-        if (!flightCode) return;
-
-        const story = activeStories.get(flightCode);
-        if (!story) return; // Story doesn't exist (maybe created before restart, or cleaned up)
-
-        // 3. END: Is this an Ender?
-        if (eventName === EVENTS.FLIGHT.ENDED) {
-            this.endStory(story, payload);
-            activeStories.delete(flightCode);
-            return;
+        // FIX: Store the interval ID so we can clear it later.
+        // Also prevent it from being set multiple times.
+        if (!this.cleanupIntervalId) {
+            this.cleanupIntervalId = setInterval(
+                () => this.cleanupAllStaleStories(),
+                10 * 60 * 1000,
+            );
         }
-
-        // 4. UPDATE: Append data to the story
-        this.updateStory(story, eventName, payload);
     }
 
-    startStory(payload) {
-        const { flightCode, creatorId, createdAt = Date.now() } = payload;
+    // FIX: New method to clean up our mess for graceful shutdowns and tests.
+    teardown() {
+        if (this.cleanupIntervalId) {
+            clearInterval(this.cleanupIntervalId);
+            this.cleanupIntervalId = null;
+        }
+    }
 
-        if (!flightCode) return;
+    createTracker(storyName, config) {
+        const activeStories = new Map(); // Key: contextId (e.g., flightCode), Value: story object
 
-        const story = {
-            meta: {
-                flightCode,
-                startTime: new Date(createdAt).toISOString(),
-                creatorId,
-                endTime: null,
-            },
-            participants: [], // Will populate as they join
-            timeline: [], // Significant events
-            stats: {
-                signalsExchanged: 0,
-                durationSeconds: 0,
-            },
+        const tracker = {
+            name: storyName,
+            config: config,
+            activeStories: activeStories,
         };
+        this.storyTrackers.set(storyName, tracker);
 
-        activeStories.set(flightCode, story);
+        // --- Attach all listeners directly to the event bus ---
+
+        // 1. Trigger listener (starts a story)
+        eventBus.on(config.trigger, (payload) => {
+            this.startStory(tracker, payload);
+        });
+
+        // 2. Ender listener(s) (ends a story)
+        const enders = Array.isArray(config.ender) ? config.ender : [config.ender];
+        enders.forEach((eventName) => {
+            eventBus.on(eventName, (payload) => {
+                this.endStory(tracker, payload, "clean_end");
+            });
+        });
+
+        // 3. Tracked event listeners (update a story)
+        for (const eventName in config.track) {
+            const trackConfig = config.track[eventName];
+            eventBus.on(eventName, (payload) => {
+                this.updateStory(tracker, payload, trackConfig);
+            });
+        }
+
+        log("info", `📜 Story Tracker Initialized: ${storyName}`);
     }
 
-    updateStory(story, eventName, payload) {
-        // Add "Peer Joined" event with rich data
-        if (eventName === EVENTS.FLIGHT.JOINED) {
-            story.participants.push({
-                id: payload.joinerId,
-                name: payload.joinerName, // Expecting these from the emit
-                ip: payload.ip, // could be redacted or raw
-                connectionType: payload.connectionType, // 'lan' or 'wan'
-                joinedAt: new Date().toISOString(),
-            });
+    getContextId(tracker, payload, trackConfig = {}) {
+        const contextKey = trackConfig.mapToContext || tracker.config.contextKey;
+        return payload ? payload[contextKey] : undefined;
+    }
 
-            story.timeline.push({
-                event: "peer_joined",
-                timestamp: new Date().toISOString(),
-                details: { name: payload.joinerName, type: payload.connectionType },
-            });
+    startStory(tracker, payload) {
+        const contextId = this.getContextId(tracker, payload);
+        if (!contextId || tracker.activeStories.has(contextId)) {
+            return;
         }
 
-        // Count signals (heavy volume, so we just count them, don't log payload)
-        if (eventName === EVENTS.FLIGHT.SIGNAL) {
-            story.stats.signalsExchanged++;
-        }
+        const newStory = tracker.config.create(payload);
+        tracker.activeStories.set(contextId, newStory);
+    }
 
-        // Log disconnections within the context of the flight
-        if (eventName === EVENTS.CLIENT.DISCONNECTED) {
-            story.timeline.push({
-                event: "participant_disconnected",
-                timestamp: new Date().toISOString(),
-                clientId: payload.clientId,
+    updateStory(tracker, payload, trackConfig) {
+        const contextId = this.getContextId(tracker, payload, trackConfig);
+        if (!contextId) return;
+
+        const story = tracker.activeStories.get(contextId);
+        if (!story) return;
+
+        try {
+            trackConfig.handler(story, payload);
+        } catch (error) {
+            log("error", "Error in story handler", {
+                storyName: tracker.name,
+                contextId: contextId,
+                error: error.message,
+                stack: error.stack,
             });
         }
     }
 
-    endStory(story, payload) {
+    endStory(tracker, payload, reason) {
+        const contextId = this.getContextId(tracker, payload);
+        if (!contextId) return;
+
+        const story = tracker.activeStories.get(contextId);
+        if (!story) return;
+
         const endTime = Date.now();
         const startTime = new Date(story.meta.startTime).getTime();
 
-        story.stats.durationSeconds = Math.round((endTime - startTime) / 1000);
+        // FIX: Make this section resilient. Only calculate duration if stats exist.
+        if (story.stats) {
+            story.stats.durationSeconds = Math.round((endTime - startTime) / 1000);
+        }
         story.meta.endTime = new Date(endTime).toISOString();
+        story.meta.endReason = reason;
 
-        // --- THE PAYOFF ---
-        // Log the full story JSON.
-        // This is where you get your "Flight Story" log entry.
-        log("info", "📜 FLIGHT STORY COMPLETE", { story });
+        log("info", `📜 STORY COMPLETE: ${tracker.name}`, { story });
+
+        tracker.activeStories.delete(contextId);
     }
 
-
-
-    cleanupStaleStories() {
+    cleanupAllStaleStories() {
         const now = Date.now();
-        let removed = 0;
+        let totalRemoved = 0;
 
-        for (const [code, story] of activeStories.entries()) {
-            const startTime = new Date(story.meta.startTime).getTime();
-            if (now - startTime > MAX_STORY_AGE_MS) {
-                story.meta.endTime = new Date().toISOString();
-                story.meta.endReason = "stale_cleanup";
-                story.stats.durationSeconds = Math.round(
-                    (Date.now() - startTime) / 1000,
-                );
-                log("warn", "📜 FLIGHT STORY STALE", { story });
-
-                activeStories.delete(code);
-                removed++;
+        for (const [storyName, tracker] of this.storyTrackers.entries()) {
+            let removedInTracker = 0;
+            for (const [contextId, story] of tracker.activeStories.entries()) {
+                const startTime = new Date(story.meta.startTime).getTime();
+                if (now - startTime > MAX_STORY_AGE_MS) {
+                    this.endStory(
+                        tracker,
+                        { [tracker.config.contextKey]: contextId },
+                        "stale_cleanup",
+                    );
+                    removedInTracker++;
+                }
+            }
+            if (removedInTracker > 0) {
+                totalRemoved += removedInTracker;
             }
         }
 
-        if (removed > 0) {
-            log("info", "cleanup:stale_stories", { count: removed });
+        if (totalRemoved > 0) {
+            log("info", "cleanup:stale_stories", { count: totalRemoved });
         }
     }
 }
