@@ -46,6 +46,10 @@ and can be bypassed via an argument.
 -   Peer discovery & LAN/WAN detection: Intelligently groups users on the same
     network (by public IP or private subnet) and informs the clients if a
     faster LAN connection is possible.
+-   Comprehensive Telemetry & Story Logging: An event-driven system logs
+    events in real-time. It also constructs "Flight
+    Stories" which are complete narratives of a peer-to-peer session from creation to
+    termination for deeper insights when debugging.
 -   HTTP API endpoints:
     -   `GET /`: Health check.
     -   `GET /stats`: Real-time server statistics.
@@ -78,31 +82,31 @@ simple JSON-based protocol.
 
 ### WebSocket Messages (Client ↔ Server)
 
-| Type | Direction | Description |
-| :--- | :--- | :--- |
-| `registered` | S → C | Sent by the server to a new client, providing their unique session ID. |
-| `register-details` | C → S | Client sends its generated name to the server. |
-| `users-on-network-update` | S → C | Server sends a list of other available users on the same network. |
-| `create-flight` | C → S | Client requests the server to create a new private session ("flight"). |
-| `flight-created` | S → C | Server responds with the unique 6-character flight code. |
-| `join-flight` | C → S | Client requests to join an existing flight using a code. |
-| `peer-joined` | S → C | Server notifies both peers a connection is established, including peer info and connection type (`lan` or `wan`). |
-| `peer-left` | S → C | Server notifies a client that their peer has disconnected. |
-| `invite-to-flight` | C → S | A client in a flight invites another user on the network to join. |
-| `flight-invitation` | S → C | Server forwards the invitation to the target user. |
-| `signal` | C ↔ S ↔ C | WebRTC signaling data (SDP/ICE) to be forwarded to its peer. |
-| `error` | S → C | Server sends an error message (e.g., "Flight not found"). |
+| Type                      | Direction | Description                                                                                                       |
+|:--------------------------|:----------|:------------------------------------------------------------------------------------------------------------------|
+| `registered`              | S → C     | Sent by the server to a new client, providing their unique session ID.                                            |
+| `register-details`        | C → S     | Client sends its generated name to the server.                                                                    |
+| `users-on-network-update` | S → C     | Server sends a list of other available users on the same network.                                                 |
+| `create-flight`           | C → S     | Client requests the server to create a new private session ("flight").                                            |
+| `flight-created`          | S → C     | Server responds with the unique 6-character flight code.                                                          |
+| `join-flight`             | C → S     | Client requests to join an existing flight using a code.                                                          |
+| `peer-joined`             | S → C     | Server notifies both peers a connection is established, including peer info and connection type (`lan` or `wan`). |
+| `peer-left`               | S → C     | Server notifies a client that their peer has disconnected.                                                        |
+| `invite-to-flight`        | C → S     | A client in a flight invites another user on the network to join.                                                 |
+| `flight-invitation`       | S → C     | Server forwards the invitation to the target user.                                                                |
+| `signal`                  | C ↔ S ↔ C | WebRTC signaling data (SDP/ICE) to be forwarded to its peer.                                                      |
+| `error`                   | S → C     | Server sends an error message (e.g., "Flight not found").                                                         |
 
 ### HTTP Endpoints
 
-| Method | Path | Description |
-| :--- | :--- | :--- |
-| GET | `/` | Basic health check endpoint. Returns a simple text response. |
-| GET | `/stats` | Returns a JSON object with server statistics (uptime, memory, connections). |
-| GET | `/logs?key=...` | Returns plain text dump of recent in-memory logs. Requires `LOG_ACCESS_KEY`. |
-| GET | `/keep-alive` | Lightweight ping endpoint for uptime checks. |
-| GET | `/api/turn-credentials` | Provides temporary STUN/TURN credentials from Cloudflare for NAT traversal. |
-| POST | `/api/uploadthing` | Handles file upload requests for UploadThing (preview flow). |
+| Method | Path                    | Description                                                                  |
+|:-------|:------------------------|:-----------------------------------------------------------------------------|
+| GET    | `/`                     | Basic health check endpoint. Returns a simple text response.                 |
+| GET    | `/stats`                | Returns a JSON object with server statistics (uptime, memory, connections).  |
+| GET    | `/logs?key=...`         | Returns plain text dump of recent in-memory logs. Requires `LOG_ACCESS_KEY`. |
+| GET    | `/keep-alive`           | Lightweight ping endpoint for uptime checks.                                 |
+| GET    | `/api/turn-credentials` | Provides temporary STUN/TURN credentials from Cloudflare for NAT traversal.  |
+| POST   | `/api/uploadthing`      | Handles file upload requests for UploadThing (preview flow).                 |
 
 ## Workflow: File Previews and Automated Cleanup
 
@@ -235,6 +239,8 @@ To run the signaling server locally, follow these steps.
 ### Testing
 
 The project uses [Jest](https://jestjs.io/) for unit and integration testing.
+Tests cover all API endpoints, WebSocket signaling flows, and the
+telemetry system, ensuring that correct events are emitted for each action.
 
 To run the tests:
 ```bash
@@ -295,6 +301,10 @@ Set these in your hosting provider's dashboard:
 
 -   `/logs?key=...` returns the most recent in-memory log lines. Use your
     `LOG_ACCESS_KEY` to access it.
+-   The server produces structured JSON logs for all key events. Look for
+    `FLIGHT STORY COMPLETE` log entries, which contain a detailed JSON object
+    summarizing an entire peer-to-peer session, including participants,
+    duration, and key statistics.
 -   The cleanup service logs each run, including:
     -   Whether DB is available.
     -   How many files were found for deletion.
