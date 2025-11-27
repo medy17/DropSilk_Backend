@@ -1,4 +1,5 @@
-name: Node.js CIname: Node.js CI
+name:
+  Node.js CIname: Node.js CI
 
 on:
   push:
@@ -13,7 +14,7 @@ jobs:
     # This ensures specific Node version
     strategy:
       matrix:
-        node-version: [18.x]
+        node-version: [ 18.x ]
 
     steps:
       - uses: actions/checkout@v3
