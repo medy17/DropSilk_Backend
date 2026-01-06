@@ -2,14 +2,13 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 
 const config = require("./config");
 const state = require("./state");
-const { getClientIp, getLocalIpForDisplay, getLogs } = require("./utils");
+const { getClientIp, getLocalIpForDisplay } = require("./utils");
 const { handleUploadThingRequest } = require("./uploadthingHandler");
 const { handleRequestEmail } = require("./emailService");
-const { eventBus, EVENTS } = require("./telemetry"); // Import Bus
+const { emit } = require("./gossamer");
 
 const PORT_TO_USE = process.env.PORT || config.PORT;
 
@@ -95,7 +94,7 @@ const server = http.createServer(async (req, res) => {
                 !config.CLOUDFLARE_TURN_TOKEN_ID ||
                 !config.CLOUDFLARE_API_TOKEN
             ) {
-                eventBus.emit(EVENTS.TURN.ERROR, {
+                emit("turn:error", {
                     message: "TURN credentials request failed: Not configured",
                 });
                 res.writeHead(501, { "Content-Type": "application/json" });
@@ -121,7 +120,7 @@ const server = http.createServer(async (req, res) => {
 
                 if (!response.ok) {
                     const errorBody = await response.text();
-                    eventBus.emit(EVENTS.TURN.ERROR, {
+                    emit("turn:error", {
                         context: "Cloudflare API Error",
                         status: response.status,
                         body: errorBody,
@@ -132,7 +131,7 @@ const server = http.createServer(async (req, res) => {
                 }
 
                 const data = await response.json();
-                eventBus.emit(EVENTS.TURN.CREDENTIALS_ISSUED, {
+                emit("turn:credentials_issued", {
                     clientIp: clientIp,
                 });
 
@@ -141,7 +140,7 @@ const server = http.createServer(async (req, res) => {
                     !Array.isArray(data.iceServers) ||
                     data.iceServers.length === 0
                 ) {
-                    eventBus.emit(EVENTS.TURN.ERROR, {
+                    emit("turn:error", {
                         context: "Invalid Cloudflare Response",
                         responseData: data,
                     });
@@ -151,7 +150,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify(data));
             } catch (error) {
-                eventBus.emit(EVENTS.TURN.ERROR, {
+                emit("turn:error", {
                     context: "Fetch Loop",
                     error: error.message,
                 });
@@ -204,40 +203,12 @@ const server = http.createServer(async (req, res) => {
             };
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(stats, null, 2));
-        } else if (req.method === "GET" && url.pathname === "/logs") {
-            const providedKey = url.searchParams.get("key") || "";
-            const expectedKey = config.LOG_ACCESS_KEY;
-
-            const providedKeyBuffer = Buffer.from(providedKey);
-            const expectedKeyBuffer = Buffer.from(expectedKey);
-
-            if (
-                providedKeyBuffer.length !== expectedKeyBuffer.length ||
-                !crypto.timingSafeEqual(providedKeyBuffer, expectedKeyBuffer)
-            ) {
-                eventBus.emit(EVENTS.SYSTEM.LOG_ACCESS, {
-                    status: "unauthorized",
-                    ip: clientIp,
-                });
-                res.writeHead(403, { "Content-Type": "text/plain" });
-                res.end("Forbidden");
-                return;
-            }
-
-            eventBus.emit(EVENTS.SYSTEM.LOG_ACCESS, {
-                status: "success",
-                ip: clientIp,
-            });
-            res.writeHead(200, {
-                "Content-Type": "text/plain; charset=utf-8",
-            });
-            res.end(getLogs().join("\n"));
         } else {
             res.writeHead(404, { "Content-Type": "text/plain" });
             res.end("Not Found");
         }
     } catch (error) {
-        eventBus.emit(EVENTS.HTTP.ERROR, {
+        emit("http:error", {
             context: "Global Request Handler",
             error: error.message,
             url: req.url,
@@ -250,13 +221,13 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.on("error", (error) => {
-    eventBus.emit(EVENTS.HTTP.ERROR, {
+    emit("http:error", {
         context: "Critical Server Error",
         error: error.message,
         code: error.code,
     });
     if (error.code === "EADDRINUSE") {
-        eventBus.emit(EVENTS.SYSTEM.SHUTDOWN, {
+        emit("system:shutdown", {
             reason: `Port ${PORT_TO_USE} in use`,
         });
         process.exit(1);
@@ -265,7 +236,7 @@ server.on("error", (error) => {
 
 function startServer() {
     server.listen(PORT_TO_USE, "0.0.0.0", () => {
-        eventBus.emit(EVENTS.SYSTEM.STARTUP, {
+        emit("system:startup", {
             port: PORT_TO_USE,
             environment: config.NODE_ENV,
             localIp: getLocalIpForDisplay(),

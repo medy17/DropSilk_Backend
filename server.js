@@ -10,15 +10,15 @@ const { initializeDatabase } = require("./src/dbClient");
 const state = require("./src/state");
 const { startCleanupService } = require("./src/cleanupService");
 
-// --- TELEMETRY IMPORTS ---
-const { initializeTelemetry, eventBus, EVENTS } = require("./src/telemetry");
+// --- GOSSAMER TELEMETRY ---
+const { initGossamer, emit } = require("./src/gossamer");
 
 const argv = require("yargs-parser")(process.argv.slice(2));
 
 async function startApp() {
-    // 1. Initialize Telemetry System FIRST
+    // 1. Initialize Gossamer Telemetry FIRST
     // This ensures that when other services start up, the listeners are ready.
-    initializeTelemetry();
+    await initGossamer();
 
     // 2. Conditionally initialize the database
     if (!argv.noDB) {
@@ -35,7 +35,7 @@ async function startApp() {
     setupGracefulShutdown(server, closeConnections);
 
     // 6. Start the server heartbeat
-    const HEARTBEAT_INTERVAL_MS = 60 * 1000;
+    const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
     setInterval(() => {
         const memoryUsage = process.memoryUsage();
         const stats = {
@@ -48,14 +48,14 @@ async function startApp() {
         };
 
         // Emit heartbeat event
-        eventBus.emit(EVENTS.SYSTEM.HEARTBEAT, stats);
+        emit("system:heartbeat", stats);
     }, HEARTBEAT_INTERVAL_MS);
 
     // 7. Start the cleanup service
     if (!argv.noDB) {
         startCleanupService(60);
     } else {
-        eventBus.emit(EVENTS.CLEANUP.SKIPPED, {
+        emit("cleanup:skipped", {
             reason: "Cleanup service disabled via --noDB flag",
         });
     }

@@ -1,7 +1,6 @@
 // --- tests/email.test.js ---
 const axios = require("axios");
 const httpMocks = require("node-mocks-http");
-const { handleRequestEmail } = require("../src/emailService");
 
 // Mock dependencies
 jest.mock("axios");
@@ -10,17 +9,13 @@ jest.mock("../src/config", () => ({
     contactEmail: "admin@example.com",
 }));
 
-// Mock the telemetry event bus
-// Define the mock inside the factory to avoid hoisting issues
-jest.mock("../src/telemetry", () => ({
-    eventBus: {
-        emit: jest.fn(),
-    },
-    EVENTS: jest.requireActual("../src/telemetry/events"),
+// Mock the Gossamer emit
+const mockEmit = jest.fn();
+jest.mock("../src/gossamer", () => ({
+    emit: mockEmit,
 }));
-// Get a reference to the mock function AFTER the mock is in place
-const { eventBus, EVENTS } = require("../src/telemetry");
-const mockEmit = eventBus.emit;
+
+const { handleRequestEmail } = require("../src/emailService");
 
 describe("Email Service", () => {
     beforeEach(() => {
@@ -43,7 +38,7 @@ describe("Email Service", () => {
         });
     });
 
-    test("Should emit REQUEST event when validating", async () => {
+    test("Should emit email:request event when validating", async () => {
         const req = httpMocks.createRequest({
             method: "POST",
             url: "/request-email",
@@ -55,7 +50,7 @@ describe("Email Service", () => {
 
         await handleRequestEmail(req, res);
 
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.EMAIL.REQUEST, {
+        expect(mockEmit).toHaveBeenCalledWith("email:request", {
             status: "validating",
         });
     });
@@ -78,7 +73,7 @@ describe("Email Service", () => {
         });
     });
 
-    test("Should emit ERROR and return 500 if Google API errors out", async () => {
+    test("Should emit email:error and return 500 if Google API errors out", async () => {
         const req = httpMocks.createRequest({
             method: "POST",
             url: "/request-email",
@@ -95,14 +90,14 @@ describe("Email Service", () => {
         expect(JSON.parse(res._getData())).toEqual({ error: "internal_error" });
 
         // Verify that the correct telemetry event was emitted
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.EMAIL.ERROR, {
+        expect(mockEmit).toHaveBeenCalledWith("email:error", {
             context: "reCAPTCHA verification failed",
             error: "Network Error",
             axiosResponse: undefined,
         });
     });
 
-    test("Should emit ERROR if contactEmail is not configured", async () => {
+    test("Should emit email:error if contactEmail is not configured", async () => {
         const config = require("../src/config");
         config.contactEmail = ""; // Temporarily unset for this test
 
@@ -117,7 +112,7 @@ describe("Email Service", () => {
         await handleRequestEmail(req, res);
 
         expect(res.statusCode).toBe(500);
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.EMAIL.ERROR, {
+        expect(mockEmit).toHaveBeenCalledWith("email:error", {
             error: "server_not_configured",
         });
 

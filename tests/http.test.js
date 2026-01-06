@@ -1,20 +1,17 @@
 // --- tests/http.test.js ---
 const request = require("supertest");
 
-// Mock telemetry FIRST
+// Mock Gossamer emit
 const mockEmit = jest.fn();
-jest.mock("../src/telemetry", () => ({
-    eventBus: { emit: mockEmit },
-    EVENTS: jest.requireActual("../src/telemetry/events"),
+jest.mock("../src/gossamer", () => ({
+    emit: mockEmit,
 }));
-const { EVENTS } = require("../src/telemetry");
 
 jest.mock("../src/config", () => ({
     PORT: 0,
     NODE_ENV: "test",
     ALLOWED_ORIGINS: new Set(["http://localhost"]),
     VERCEL_PREVIEW_ORIGIN_REGEX: /^https:\/\/.*\.vercel\.app$/,
-    LOG_ACCESS_KEY: "test-secret",
     CLOUDFLARE_TURN_TOKEN_ID: "fake-id",
     CLOUDFLARE_API_TOKEN: "fake-token",
     NO_DB: true,
@@ -47,25 +44,7 @@ describe("HTTP Server Endpoints", () => {
         }
     });
 
-    test("GET /logs should be forbidden and emit event on bad key", async () => {
-        const res = await request(server).get("/logs?key=wrong-key");
-        expect(res.statusCode).toEqual(403);
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.SYSTEM.LOG_ACCESS, {
-            status: "unauthorized",
-            ip: "127.0.0.1",
-        });
-    });
-
-    test("GET /logs should work and emit event with correct key", async () => {
-        const res = await request(server).get("/logs?key=test-secret");
-        expect(res.statusCode).toEqual(200);
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.SYSTEM.LOG_ACCESS, {
-            status: "success",
-            ip: "127.0.0.1",
-        });
-    });
-
-    test("GET /api/turn-credentials should emit TURN.ERROR on upstream API failure", async () => {
+    test("GET /api/turn-credentials should emit turn:error on upstream API failure", async () => {
         global.fetch = jest.fn(() =>
             Promise.resolve({
                 ok: false,
@@ -78,14 +57,14 @@ describe("HTTP Server Endpoints", () => {
         expect(res.statusCode).toEqual(500);
         expect(res.body).toHaveProperty("error");
 
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.TURN.ERROR, {
+        expect(mockEmit).toHaveBeenCalledWith("turn:error", {
             context: "Cloudflare API Error",
             status: 500,
             body: "Cloudflare Down",
         });
     });
 
-    test("GET /api/turn-credentials should emit TURN.CREDENTIALS_ISSUED on success", async () => {
+    test("GET /api/turn-credentials should emit turn:credentials_issued on success", async () => {
         global.fetch = jest.fn(() =>
             Promise.resolve({
                 ok: true,
@@ -97,8 +76,26 @@ describe("HTTP Server Endpoints", () => {
         const res = await request(server).get("/api/turn-credentials");
         expect(res.statusCode).toEqual(200);
 
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.TURN.CREDENTIALS_ISSUED, {
+        expect(mockEmit).toHaveBeenCalledWith("turn:credentials_issued", {
             clientIp: "127.0.0.1",
         });
+    });
+
+    test("GET / should return health check message", async () => {
+        const res = await request(server).get("/");
+        expect(res.statusCode).toEqual(200);
+        expect(res.text).toContain("Server is alive");
+    });
+
+    test("GET /stats should return server stats", async () => {
+        const res = await request(server).get("/stats");
+        expect(res.statusCode).toEqual(200);
+        expect(res.body).toHaveProperty("activeConnections");
+        expect(res.body).toHaveProperty("uptime");
+    });
+
+    test("GET /unknown should return 404", async () => {
+        const res = await request(server).get("/some-unknown-path");
+        expect(res.statusCode).toEqual(404);
     });
 });

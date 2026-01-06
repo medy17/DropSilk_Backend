@@ -4,11 +4,9 @@ const http = require("http");
 
 // 1. Mock Config & Dependencies
 const mockEmit = jest.fn();
-jest.mock("../src/telemetry", () => ({
-    eventBus: { emit: mockEmit },
-    EVENTS: jest.requireActual("../src/telemetry/events"),
+jest.mock("../src/gossamer", () => ({
+    emit: mockEmit,
 }));
-const { EVENTS } = require("../src/telemetry");
 
 jest.mock("../src/config", () => ({
     PORT: 0,
@@ -43,7 +41,6 @@ const TEST_HOST = "127.0.0.1";
 
 // --- Robust Client Helper with Message Buffering ---
 const createClient = () => {
-    // (This helper function is unchanged and perfect, no need to modify it)
     const ws = new WebSocket(`ws://${TEST_HOST}:${port}`);
     ws.messageBuffer = [];
     ws.on("message", (data) => {
@@ -64,7 +61,6 @@ const createClient = () => {
 
 // --- Robust Message Waiter ---
 const waitForMessage = (ws, type) => {
-    // (This helper function is also perfect as is)
     return new Promise((resolve, reject) => {
         const bufferedIndex = ws.messageBuffer.findIndex((m) => m.type === type);
         if (bufferedIndex !== -1) {
@@ -103,13 +99,13 @@ describe("Signaling Service (WebSocket)", () => {
     });
 
     afterEach(() => {
-        mockEmit.mockClear(); // Clear the mock emit function after each test
+        mockEmit.mockClear();
         state.clients.clear();
         for (const key in state.flights) delete state.flights[key];
         clients.forEach((c) => {
             try {
                 c.terminate();
-            } catch (e) {}
+            } catch (e) { }
         });
         clients.length = 0;
     });
@@ -119,13 +115,13 @@ describe("Signaling Service (WebSocket)", () => {
         server.close(done);
     });
 
-    test("Client should connect and emit CLIENT.CONNECTED event", async () => {
+    test("Client should connect and emit client:connected event", async () => {
         const ws = await createClient();
         const msg = await waitForMessage(ws, "registered");
         expect(msg.id).toBeDefined();
 
         expect(mockEmit).toHaveBeenCalledWith(
-            EVENTS.CLIENT.CONNECTED,
+            "client:connected",
             expect.objectContaining({
                 clientId: msg.id,
                 ip: "127.0.0.1",
@@ -133,14 +129,14 @@ describe("Signaling Service (WebSocket)", () => {
         );
     });
 
-    test("Client should register name and emit CLIENT.REGISTERED_DETAILS", async () => {
+    test("Client should register name and emit client:registered_details", async () => {
         const ws = await createClient();
         const regMsg = await waitForMessage(ws, "registered");
 
         ws.send(JSON.stringify({ type: "register-details", name: "TestUser" }));
-        await new Promise((r) => setTimeout(r, 50)); // allow server to process
+        await new Promise((r) => setTimeout(r, 50));
 
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.CLIENT.REGISTERED_DETAILS, {
+        expect(mockEmit).toHaveBeenCalledWith("client:registered_details", {
             clientId: regMsg.id,
             newName: "TestUser",
         });
@@ -160,7 +156,7 @@ describe("Signaling Service (WebSocket)", () => {
         const flightMsg = await waitForMessage(host, "flight-created");
         const flightCode = flightMsg.flightCode;
         expect(mockEmit).toHaveBeenCalledWith(
-            EVENTS.FLIGHT.CREATED,
+            "flight:created",
             expect.objectContaining({ flightCode }),
         );
 
@@ -168,7 +164,7 @@ describe("Signaling Service (WebSocket)", () => {
         joiner.send(JSON.stringify({ type: "join-flight", flightCode }));
         await waitForMessage(host, "peer-joined");
         expect(mockEmit).toHaveBeenCalledWith(
-            EVENTS.FLIGHT.JOINED,
+            "flight:joined",
             expect.objectContaining({ flightCode, joinerName: "Joiner" }),
         );
 
@@ -177,12 +173,12 @@ describe("Signaling Service (WebSocket)", () => {
         host.send(JSON.stringify({ type: "signal", data: signalData }));
         await waitForMessage(joiner, "signal");
         expect(mockEmit).toHaveBeenCalledWith(
-            EVENTS.FLIGHT.SIGNAL,
+            "flight:signal",
             expect.objectContaining({ flightCode }),
         );
     });
 
-    test("Disconnecting should emit CLIENT.DISCONNECTED and FLIGHT.ENDED", async () => {
+    test("Disconnecting should emit client:disconnected and flight:ended", async () => {
         const host = await createClient();
         await waitForMessage(host, "registered");
         host.send(JSON.stringify({ type: "create-flight" }));
@@ -196,7 +192,7 @@ describe("Signaling Service (WebSocket)", () => {
         await new Promise((r) => setTimeout(r, 100));
 
         expect(mockEmit).toHaveBeenCalledWith(
-            EVENTS.CLIENT.DISCONNECTED,
+            "client:disconnected",
             expect.objectContaining({
                 clientId: hostMeta.id,
                 flightCode: code,
@@ -204,14 +200,14 @@ describe("Signaling Service (WebSocket)", () => {
         );
 
         expect(mockEmit).toHaveBeenCalledWith(
-            EVENTS.FLIGHT.ENDED,
+            "flight:ended",
             expect.objectContaining({
                 flightCode: code,
             }),
         );
     });
 
-    test("Should emit FLIGHT.ERROR if joining a full flight", async () => {
+    test("Should emit flight:error if joining a full flight", async () => {
         const host = await createClient();
         const user2 = await createClient();
         const user3 = await createClient();
@@ -227,14 +223,14 @@ describe("Signaling Service (WebSocket)", () => {
         user3.send(JSON.stringify({ type: "join-flight", flightCode: code }));
         await waitForMessage(user3, "error");
 
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.FLIGHT.ERROR, {
+        expect(mockEmit).toHaveBeenCalledWith("flight:error", {
             clientId: expect.any(String),
             flightCode: code,
             error: "flight_full",
         });
     });
 
-    test("Should emit CLIENT.ERROR on invalid JSON", async () => {
+    test("Should emit client:error on invalid JSON", async () => {
         const ws = await createClient();
         await waitForMessage(ws, "registered");
 
@@ -242,7 +238,7 @@ describe("Signaling Service (WebSocket)", () => {
         await waitForMessage(ws, "error");
 
         expect(mockEmit).toHaveBeenCalledWith(
-            EVENTS.CLIENT.ERROR,
+            "client:error",
             expect.objectContaining({ context: "JSON parse error" }),
         );
     });

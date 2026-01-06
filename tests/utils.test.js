@@ -3,12 +3,13 @@
 // Mock config to prevent loading side effects
 jest.mock('../src/config', () => ({
     PORT: 8080,
-    MAX_LOG_BUFFER_SIZE: 100,
+    SHUTDOWN_TIMEOUT: 5000,
 }));
 
-// Mock state to prevent logging circular dependencies
-jest.mock('../src/state', () => ({
-    logs: [],
+// Mock gossamer to prevent initialization
+jest.mock('../src/gossamer', () => ({
+    emit: jest.fn(),
+    flush: jest.fn().mockResolvedValue(undefined),
 }));
 
 const { getCleanIPv4, isPrivateIP } = require('../src/utils');

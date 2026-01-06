@@ -1,17 +1,19 @@
 // --- src/dbClient.js ---
 
 const { Pool } = require("pg");
-const { log } = require("./utils");
 const config = require("./config");
-// We can try to use eventBus here, but it might be too early for listeners
-// So we stick to log for critical startup messages.
 
 let pool;
 let dbInitialized = false;
 
+// Helper for early-stage logging (before Gossamer is initialized)
+const earlyLog = (level, message, meta = {}) => {
+    console.log(JSON.stringify({ level: level.toUpperCase(), message, ...meta }));
+};
+
 // Honour --noDB / NO_DB
 if (config.NO_DB) {
-    log("info", "🛑 Database disabled via --noDB/NO_DB. Skipping DB initialisation.");
+    earlyLog("info", "🛑 Database disabled via --noDB/NO_DB. Skipping DB initialisation.");
     dbInitialized = false;
 } else if (process.env.DATABASE_URL) {
     try {
@@ -21,25 +23,28 @@ if (config.NO_DB) {
                 rejectUnauthorized: false,
             },
         });
-        log("info", "🐘 Database connection pool created successfully.");
+        earlyLog("info", "🐘 Database connection pool created successfully.");
         dbInitialized = true;
     } catch (error) {
-        log("error", "🚨 Failed to create database connection pool", {
+        earlyLog("error", "🚨 Failed to create database connection pool", {
             error: error.message,
         });
         process.exit(1);
     }
 } else {
-    log("warn", "⚠️ DATABASE_URL not set. Database features will be disabled.");
+    earlyLog("warn", "⚠️ DATABASE_URL not set. Database features will be disabled.");
 }
 
 const initializeDatabase = async () => {
+    // At this point, Gossamer should be initialized, so we can use emit
+    const { emit } = require("./gossamer");
+
     if (config.NO_DB) {
-        log("info", "DB disabled via --noDB/NO_DB. Skipping table creation.");
+        emit("system:startup", { service: "Database", status: "disabled", reason: "--noDB flag" });
         return;
     }
     if (!dbInitialized) {
-        log("warn", "DB not initialized, skipping table creation.");
+        emit("system:startup", { service: "Database", status: "skipped", reason: "not initialized" });
         return;
     }
 
@@ -55,11 +60,9 @@ const initializeDatabase = async () => {
 
     try {
         await pool.query(createTableQuery);
-        log("info", "✅ Database table 'uploaded_files' is ready.");
+        emit("system:startup", { service: "Database", status: "ready", table: "uploaded_files" });
     } catch (err) {
-        log("error", "🚨 Error initializing database table", {
-            error: err.stack,
-        });
+        emit("system:error", { service: "Database", error: err.stack });
         process.exit(1);
     }
 };
@@ -67,7 +70,6 @@ const initializeDatabase = async () => {
 module.exports = {
     query: (text, params) => {
         if (!dbInitialized) {
-            // Throwing is better for the service to catch and log via Event Bus
             throw new Error("Database is not available.");
         }
         return pool.query(text, params);

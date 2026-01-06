@@ -2,7 +2,7 @@
 
 const config = require("./config");
 const db = require("./dbClient");
-const { eventBus, EVENTS } = require("./telemetry");
+const { emit } = require("./gossamer");
 
 let utRequestHandler = null;
 
@@ -15,7 +15,7 @@ async function getUtRequestHandler() {
 
     const { createUploadthing, createRouteHandler } = await import(
         "uploadthing/server"
-        );
+    );
 
     const f = createUploadthing();
 
@@ -28,7 +28,7 @@ async function getUtRequestHandler() {
                 return { uploadedBy: "dropsilk-preview" };
             })
             .onUploadComplete(async ({ file }) => {
-                eventBus.emit(EVENTS.UPLOAD.SUCCESS, {
+                emit("upload:success", {
                     url: file.url,
                     key: file.key,
                 });
@@ -45,9 +45,9 @@ async function getUtRequestHandler() {
                             file.name,
                         ]);
 
-                        eventBus.emit(EVENTS.UPLOAD.DB_SAVED, { key: file.key });
+                        emit("upload:db_saved", { key: file.key });
                     } catch (dbError) {
-                        eventBus.emit(EVENTS.UPLOAD.ERROR, {
+                        emit("upload:error", {
                             context: "DB Save Failed",
                             key: file.key,
                             error: dbError.message,
@@ -129,7 +129,7 @@ async function handleUploadThingRequest(req, res) {
         const webRes = await handler(webReq);
         await sendWebResponse(res, webRes);
     } catch (err) {
-        eventBus.emit(EVENTS.UPLOAD.ERROR, {
+        emit("upload:error", {
             context: "Handler Route Error",
             error: err.message,
         });

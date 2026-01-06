@@ -1,6 +1,7 @@
 // --- tests/cleanup.test.js ---
 
 const mockDeleteFiles = jest.fn();
+const mockEmit = jest.fn();
 
 jest.mock("uploadthing/server", () => ({
     UTApi: jest.fn().mockImplementation(() => ({
@@ -8,9 +9,8 @@ jest.mock("uploadthing/server", () => ({
     })),
 }));
 
-jest.mock("../src/telemetry", () => ({
-    EVENTS: jest.requireActual("../src/telemetry/events"),
-    eventBus: { emit: jest.fn() },
+jest.mock("../src/gossamer", () => ({
+    emit: mockEmit,
 }));
 
 jest.mock("../src/dbClient", () => ({
@@ -20,7 +20,6 @@ jest.mock("../src/dbClient", () => ({
 
 // Import runCleanup directly to make tests synchronous and predictable.
 const { runCleanup } = require("../src/cleanupService");
-const { eventBus, EVENTS } = require("../src/telemetry");
 const db = require("../src/dbClient");
 
 describe("Cleanup Service Logic (runCleanup)", () => {
@@ -28,20 +27,20 @@ describe("Cleanup Service Logic (runCleanup)", () => {
         jest.clearAllMocks();
     });
 
-    test("Should emit COMPLETE if no old files are found", async () => {
+    test("Should emit cleanup:complete if no old files are found", async () => {
         db.query.mockResolvedValueOnce({ rows: [] });
 
         await runCleanup();
 
         expect(db.query).toHaveBeenCalledTimes(1);
         expect(mockDeleteFiles).not.toHaveBeenCalled();
-        expect(eventBus.emit).toHaveBeenCalledWith(EVENTS.CLEANUP.COMPLETE, {
+        expect(mockEmit).toHaveBeenCalledWith("cleanup:complete", {
             count: 0,
             message: "No files to clean",
         });
     });
 
-    test("Should emit START and COMPLETE on successful cleanup", async () => {
+    test("Should emit cleanup:start and cleanup:complete on successful cleanup", async () => {
         const fileKeys = ["key1", "key2"];
         db.query.mockResolvedValueOnce({
             rows: [{ file_key: "key1" }, { file_key: "key2" }],
@@ -52,15 +51,15 @@ describe("Cleanup Service Logic (runCleanup)", () => {
         await runCleanup();
 
         // Check the sequence of calls
-        const emitCalls = eventBus.emit.mock.calls;
-        expect(emitCalls[0][0]).toBe(EVENTS.CLEANUP.START);
+        const emitCalls = mockEmit.mock.calls;
+        expect(emitCalls[0][0]).toBe("cleanup:start");
         expect(mockDeleteFiles).toHaveBeenCalledWith(fileKeys);
         expect(db.query).toHaveBeenCalledTimes(2);
-        expect(emitCalls[1][0]).toBe(EVENTS.CLEANUP.COMPLETE);
+        expect(emitCalls[1][0]).toBe("cleanup:complete");
         expect(emitCalls[1][1]).toEqual({ deletedCount: 2 });
     });
 
-    test("Should emit ERROR and NOT delete from DB if UploadThing fails", async () => {
+    test("Should emit cleanup:error and NOT delete from DB if UploadThing fails", async () => {
         const fileKeys = ["key1"];
         db.query.mockResolvedValueOnce({ rows: [{ file_key: "key1" }] });
         mockDeleteFiles.mockResolvedValueOnce({
@@ -72,7 +71,7 @@ describe("Cleanup Service Logic (runCleanup)", () => {
 
         expect(mockDeleteFiles).toHaveBeenCalledWith(fileKeys);
         expect(db.query).toHaveBeenCalledTimes(1);
-        expect(eventBus.emit).toHaveBeenCalledWith(EVENTS.CLEANUP.ERROR, {
+        expect(mockEmit).toHaveBeenCalledWith("cleanup:error", {
             context: "UploadThing Deletion Failed",
             result: { success: false, error: "UT API is down" },
         });

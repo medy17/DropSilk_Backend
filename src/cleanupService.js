@@ -2,7 +2,7 @@
 
 const { UTApi } = require("uploadthing/server");
 const db = require("./dbClient");
-const { eventBus, EVENTS } = require("./telemetry");
+const { emit } = require("./gossamer");
 
 // We initialize UTApi here.
 const utapi = new UTApi();
@@ -12,7 +12,7 @@ const TWENTY_FOUR_HOURS_IN_MS = 24 * 60 * 60 * 1000;
 async function runCleanup() {
     // If the database is not initialized, we can't do anything.
     if (!db.isDatabaseInitialized()) {
-        eventBus.emit(EVENTS.CLEANUP.SKIPPED, {
+        emit("cleanup:skipped", {
             reason: "DB not initialized",
         });
         return;
@@ -28,7 +28,7 @@ async function runCleanup() {
         ]);
 
         if (filesToDelete.length === 0) {
-            eventBus.emit(EVENTS.CLEANUP.COMPLETE, {
+            emit("cleanup:complete", {
                 count: 0,
                 message: "No files to clean",
             });
@@ -36,7 +36,7 @@ async function runCleanup() {
         }
 
         const fileKeys = filesToDelete.map((file) => file.file_key);
-        eventBus.emit(EVENTS.CLEANUP.START, {
+        emit("cleanup:start", {
             count: fileKeys.length,
             keys: fileKeys,
         });
@@ -45,7 +45,7 @@ async function runCleanup() {
         const deleteResult = await utapi.deleteFiles(fileKeys);
 
         if (!deleteResult.success) {
-            eventBus.emit(EVENTS.CLEANUP.ERROR, {
+            emit("cleanup:error", {
                 context: "UploadThing Deletion Failed",
                 result: deleteResult,
             });
@@ -56,11 +56,11 @@ async function runCleanup() {
         const deleteQuery = `DELETE FROM uploaded_files WHERE file_key = ANY($1::text[])`;
         const deleteDbResult = await db.query(deleteQuery, [fileKeys]);
 
-        eventBus.emit(EVENTS.CLEANUP.COMPLETE, {
+        emit("cleanup:complete", {
             deletedCount: deleteDbResult.rowCount,
         });
     } catch (error) {
-        eventBus.emit(EVENTS.CLEANUP.ERROR, {
+        emit("cleanup:error", {
             error: error.message,
             stack: error.stack,
         });
@@ -69,14 +69,14 @@ async function runCleanup() {
 
 function startCleanupService(intervalMinutes = 15) {
     if (!db.isDatabaseInitialized()) {
-        eventBus.emit(EVENTS.CLEANUP.SKIPPED, {
+        emit("cleanup:skipped", {
             reason: "Cleanup service disabled (DB not initialised/disabled).",
         });
         return;
     }
 
     // We log/emit that the schedule is active
-    eventBus.emit(EVENTS.SYSTEM.STARTUP, {
+    emit("system:startup", {
         service: "Cleanup Service",
         interval: intervalMinutes,
     });

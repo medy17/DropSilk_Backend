@@ -4,7 +4,7 @@ const WebSocket = require("ws");
 const config = require("./config");
 const state = require("./state");
 const { getClientIp, isPrivateIP } = require("./utils");
-const { eventBus, EVENTS } = require("./telemetry"); // Import Bus
+const { emit } = require("./gossamer");
 
 let wss;
 let healthInterval;
@@ -19,7 +19,7 @@ function initializeSignaling(server) {
     });
 
     wss.on("error", (error) => {
-        eventBus.emit(EVENTS.CLIENT.ERROR, {
+        emit("client:error", {
             context: "WebSocket server error",
             error: error.message,
             stack: error.stack,
@@ -30,7 +30,7 @@ function initializeSignaling(server) {
 
     startHealthChecks();
 
-    eventBus.emit(EVENTS.SYSTEM.STARTUP, { service: "Signaling Service" });
+    emit("system:startup", { service: "Signaling Service" });
     return wss;
 }
 
@@ -45,7 +45,7 @@ function verifyClient(info, done) {
         if (isAllowed) {
             done(true);
         } else {
-            eventBus.emit(EVENTS.CLIENT.ERROR, {
+            emit("client:error", {
                 context: "Connection rejected (invalid origin)",
                 origin,
                 ip: getClientIp(info.req),
@@ -58,7 +58,7 @@ function verifyClient(info, done) {
     if (config.ALLOWED_ORIGINS.has(origin) || !origin) {
         done(true);
     } else {
-        eventBus.emit(EVENTS.CLIENT.ERROR, {
+        emit("client:error", {
             context: "Connection rejected (development origin check)",
             origin,
             ip: getClientIp(info.req),
@@ -84,7 +84,7 @@ function handleConnection(ws, req) {
     state.connectionStats.totalConnections++;
 
     // EMIT: Client Connected
-    eventBus.emit(EVENTS.CLIENT.CONNECTED, {
+    emit("client:connected", {
         clientId,
         ip: cleanRemoteIp,
         totalClients: state.clients.size,
@@ -101,7 +101,7 @@ function handleConnection(ws, req) {
     ws.on("message", (message) => handleMessage(ws, message));
     ws.on("close", () => handleDisconnect(ws));
     ws.on("error", (error) =>
-        eventBus.emit(EVENTS.CLIENT.ERROR, {
+        emit("client:error", {
             clientId: metadata.id,
             error: error.message,
         }),
@@ -118,7 +118,7 @@ function handleMessage(ws, message) {
     let data;
     try {
         if (message.length > config.MAX_PAYLOAD) {
-            eventBus.emit(EVENTS.CLIENT.ERROR, {
+            emit("client:error", {
                 clientId: meta.id,
                 context: "Message too large",
                 size: message.length,
@@ -131,7 +131,7 @@ function handleMessage(ws, message) {
         data = JSON.parse(message);
         if (!data.type) return;
     } catch (error) {
-        eventBus.emit(EVENTS.CLIENT.ERROR, {
+        emit("client:error", {
             clientId: meta.id,
             context: "JSON parse error",
             error: error.message,
@@ -160,7 +160,7 @@ function handleMessage(ws, message) {
                 state.clients.set(ws, meta);
 
                 // EMIT: Client Registered
-                eventBus.emit(EVENTS.CLIENT.REGISTERED_DETAILS, {
+                emit("client:registered_details", {
                     clientId: meta.id,
                     newName: meta.name,
                 });
@@ -189,7 +189,7 @@ function handleMessage(ws, message) {
                 state.connectionStats.totalFlightsCreated++;
 
                 // EMIT: Flight Created (This triggers the Flight Story)
-                eventBus.emit(EVENTS.FLIGHT.CREATED, {
+                emit("flight:created", {
                     flightCode,
                     creatorId: meta.id,
                     createdAt: Date.now(),
@@ -224,7 +224,7 @@ function handleMessage(ws, message) {
                 }
                 const flight = state.flights[data.flightCode];
                 if (!flight || flight.members.length >= 2) {
-                    eventBus.emit(EVENTS.FLIGHT.ERROR, {
+                    emit("flight:error", {
                         clientId: meta.id,
                         flightCode: data.flightCode,
                         error: !flight ? "not_found" : "flight_full",
@@ -272,7 +272,7 @@ function handleMessage(ws, message) {
                 state.connectionStats.totalFlightsJoined++;
 
                 // EMIT: Peer Joined (Updates the Flight Story)
-                eventBus.emit(EVENTS.FLIGHT.JOINED, {
+                emit("flight:joined", {
                     flightCode: data.flightCode,
                     joinerId: meta.id,
                     joinerName: meta.name,
@@ -302,8 +302,7 @@ function handleMessage(ws, message) {
 
             case "invite-to-flight":
                 if (!data.inviteeId || !data.flightCode) return;
-                // We emit the invitation event for tracing
-                eventBus.emit(EVENTS.FLIGHT.INVITATION, {
+                emit("flight:invitation", {
                     flightCode: data.flightCode,
                     from: meta.id,
                     to: data.inviteeId,
@@ -329,7 +328,7 @@ function handleMessage(ws, message) {
                 if (!meta.flightCode || !state.flights[meta.flightCode]) return;
 
                 // EMIT: Signal (Captured by Story stats, usually silenced in console)
-                eventBus.emit(EVENTS.FLIGHT.SIGNAL, {
+                emit("flight:signal", {
                     flightCode: meta.flightCode,
                     senderId: meta.id,
                 });
@@ -352,7 +351,7 @@ function handleMessage(ws, message) {
                 );
         }
     } catch (error) {
-        eventBus.emit(EVENTS.CLIENT.ERROR, {
+        emit("client:error", {
             context: "Error in message switch",
             clientId: meta.id,
             messageType: data?.type,
@@ -377,7 +376,7 @@ function handleDisconnect(ws) {
     state.connectionStats.totalDisconnections++;
 
     // EMIT: Disconnected
-    eventBus.emit(EVENTS.CLIENT.DISCONNECTED, {
+    emit("client:disconnected", {
         clientId: meta.id,
         remainingClients: state.clients.size,
         flightCode: meta.flightCode, // Pass flight code if they were in one
@@ -395,7 +394,7 @@ function handleDisconnect(ws) {
 
         if (flightRef.members.length === 0) {
             // EMIT: Flight Ended (Finalizes the Story)
-            eventBus.emit(EVENTS.FLIGHT.ENDED, {
+            emit("flight:ended", {
                 flightCode: meta.flightCode,
                 reason: "all_members_left",
             });
@@ -461,7 +460,7 @@ function broadcastUsersOnSameNetwork() {
             );
         }
     } catch (error) {
-        eventBus.emit(EVENTS.SYSTEM.ERROR, {
+        emit("system:error", {
             context: "broadcastUsersOnSameNetwork",
             error: error.message,
         });
@@ -481,7 +480,7 @@ function startHealthChecks() {
 }
 
 function closeConnections() {
-    eventBus.emit(EVENTS.SYSTEM.SHUTDOWN, {
+    emit("system:shutdown", {
         message: "Closing WebSocket connections",
     });
     clearInterval(healthInterval);

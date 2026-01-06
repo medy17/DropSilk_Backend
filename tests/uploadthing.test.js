@@ -25,11 +25,12 @@ jest.mock("uploadthing/server", () => ({
     createRouteHandler: () => mockHandler,
 }));
 
-// Now mock the other dependencies
-jest.mock("../src/telemetry", () => ({
-    eventBus: { emit: jest.fn() },
-    EVENTS: jest.requireActual("../src/telemetry/events"),
+// Mock the Gossamer emit
+const mockEmit = jest.fn();
+jest.mock("../src/gossamer", () => ({
+    emit: mockEmit,
 }));
+
 jest.mock("../src/config", () => ({
     UPLOADTHING_TOKEN: "sk_live_mock_token_12345",
     PORT: 3000,
@@ -41,7 +42,6 @@ jest.mock("../src/dbClient", () => ({
 
 // And finally, require the modules
 const { handleUploadThingRequest } = require("../src/uploadthingHandler");
-const { eventBus, EVENTS } = require("../src/telemetry");
 
 describe("UploadThing Handler", () => {
     beforeEach(() => {
@@ -54,11 +54,10 @@ describe("UploadThing Handler", () => {
         onUploadCompleteCallback = null;
     });
 
-    test("onUploadComplete should emit UPLOAD.SUCCESS and DB_SAVED", async () => {
+    test("onUploadComplete should emit upload:success and upload:db_saved", async () => {
         // We need to re-require here because of jest.resetModules
         const { handleUploadThingRequest } = require('../src/uploadthingHandler');
-        const { eventBus } = require("../src/telemetry");
-        const mockEmit = eventBus.emit;
+        const { emit } = require("../src/gossamer");
 
         const req = httpMocks.createRequest({
             method: "GET",
@@ -82,11 +81,11 @@ describe("UploadThing Handler", () => {
         };
         await onUploadCompleteCallback(fileData);
 
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.UPLOAD.SUCCESS, {
+        expect(emit).toHaveBeenCalledWith("upload:success", {
             key: "123-abc",
             url: "https://utfs.io/f/123-abc",
         });
-        expect(mockEmit).toHaveBeenCalledWith(EVENTS.UPLOAD.DB_SAVED, {
+        expect(emit).toHaveBeenCalledWith("upload:db_saved", {
             key: "123-abc",
         });
     });

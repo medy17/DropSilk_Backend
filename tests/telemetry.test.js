@@ -1,127 +1,110 @@
 // --- tests/telemetry.test.js ---
+// Tests for Gossamer telemetry wrapper
 
-describe("Telemetry Architecture", () => {
-    let mockLog;
-    let eventBus;
-    let storyManager;
-    let config;
-    let EVENTS;
-
-    beforeAll(() => {
-        jest.useFakeTimers();
-    });
+describe("Gossamer Telemetry Wrapper", () => {
+    let gossamerModule;
+    let mockGossamer;
 
     beforeEach(() => {
         jest.resetModules();
 
-        mockLog = jest.fn();
-        jest.mock("../src/utils", () => ({ log: mockLog }));
+        // Mock the @dropsilk/gossamer module
+        mockGossamer = {
+            init: jest.fn().mockResolvedValue(undefined),
+            emit: jest.fn(),
+            emitError: jest.fn(),
+            flush: jest.fn().mockResolvedValue(undefined),
+        };
 
-        jest.mock("../src/telemetry/config", () => ({
-            enabled: true,
-            logs: { "system:startup": { level: "info" } },
-            stories: {
-                flight_story: {
-                    enabled: true,
-                    trigger: "flight:created",
-                    ender: "flight:ended",
-                    track: ["flight:joined", "flight:signal"],
-                },
-            },
+        jest.mock("@dropsilk/gossamer", () => ({
+            gossamer: mockGossamer,
+            ConsolePrettyTransport: jest.fn().mockImplementation(() => ({})),
         }));
 
-        const telemetry = require("../src/telemetry/index");
-        storyManager = require("../src/telemetry/storyManager");
-        config = require("../src/telemetry/config");
-        EVENTS = telemetry.EVENTS;
-        eventBus = telemetry.eventBus;
-
-        telemetry.initializeTelemetry();
-
-        // FIX: Clear the mock log AFTER initialization.
-        // This ignores the "📡 Telemetry Architecture Initialized" log
-        // so each test starts with a clean slate.
-        mockLog.mockClear();
+        // Mock the config
+        jest.mock("../gossamer.config.js", () => ({
+            enabled: true,
+            events: {},
+            stories: {},
+        }));
     });
 
-    afterAll(() => {
-        jest.useRealTimers();
+    afterEach(() => {
+        jest.clearAllMocks();
     });
 
-    describe("Direct Logging", () => {
-        test("should call the logger for an event listed in config.logs", () => {
-            const payload = { service: "Test" };
-            eventBus.emit(EVENTS.SYSTEM.STARTUP, payload);
+    describe("initGossamer", () => {
+        test("should initialize Gossamer with config", async () => {
+            gossamerModule = require("../src/gossamer");
+            await gossamerModule.initGossamer();
 
-            expect(mockLog).toHaveBeenCalledTimes(1);
-            expect(mockLog).toHaveBeenCalledWith("info", "system:startup", payload);
-        });
-
-        test("should NOT call the logger for an event not in config.logs", () => {
-            const payload = { uptime: 123 };
-            eventBus.emit(EVENTS.SYSTEM.HEARTBEAT, payload);
-
-            expect(mockLog).not.toHaveBeenCalled();
-        });
-
-        test("should not log anything if telemetry is disabled", () => {
-            config.enabled = false;
-            const payload = { service: "Test" };
-            eventBus.emit(EVENTS.SYSTEM.STARTUP, payload);
-
-            expect(mockLog).not.toHaveBeenCalled();
-        });
-    });
-
-    describe("Story Manager", () => {
-        const flightCode = "TEST01";
-        const creatorId = "creator-abc";
-
-        test("should start a story when a trigger event is emitted", () => {
-            // FIX: Don't test private state. The fact that the end-to-end test passes
-            // is proof enough that a story was created and managed.
-            const spy = jest.spyOn(storyManager, "processEvent");
-            const createPayload = { flightCode, creatorId };
-            eventBus.emit(EVENTS.FLIGHT.CREATED, createPayload);
-
-            expect(spy).toHaveBeenCalledWith(EVENTS.FLIGHT.CREATED, createPayload);
-        });
-
-        test("should end a story and log the result", () => {
-            const startTime = Date.now();
-            jest.spyOn(Date, "now").mockReturnValue(startTime + 5000);
-
-            eventBus.emit(EVENTS.FLIGHT.CREATED, {
-                flightCode,
-                creatorId,
-                createdAt: startTime,
-            });
-            eventBus.emit(EVENTS.FLIGHT.SIGNAL, { flightCode });
-            eventBus.emit(EVENTS.FLIGHT.ENDED, { flightCode });
-
-            // Since we cleared the setup log, this should now be the only call.
-            expect(mockLog).toHaveBeenCalledTimes(1);
-            expect(mockLog).toHaveBeenCalledWith(
-                "info",
-                "📜 FLIGHT STORY COMPLETE",
+            expect(mockGossamer.init).toHaveBeenCalledTimes(1);
+            expect(mockGossamer.init).toHaveBeenCalledWith(
+                expect.any(Object),
                 expect.objectContaining({
-                    story: expect.objectContaining({
-                        stats: expect.objectContaining({
-                            signalsExchanged: 1,
-                            durationSeconds: 5,
-                        }),
-                    }),
+                    transports: expect.any(Array),
+                    captureCrashes: true,
                 }),
             );
         });
 
-        test("should not process stories if the story system is disabled", () => {
-            const spy = jest.spyOn(storyManager, "processEvent");
-            config.stories.flight_story.enabled = false;
+        test("should only initialize once", async () => {
+            gossamerModule = require("../src/gossamer");
+            await gossamerModule.initGossamer();
+            await gossamerModule.initGossamer();
 
-            eventBus.emit(EVENTS.FLIGHT.CREATED, { flightCode, creatorId });
+            expect(mockGossamer.init).toHaveBeenCalledTimes(1);
+        });
+    });
 
-            expect(spy).not.toHaveBeenCalled();
+    describe("emit", () => {
+        test("should emit events after initialization", async () => {
+            gossamerModule = require("../src/gossamer");
+            await gossamerModule.initGossamer();
+
+            gossamerModule.emit("test:event", { key: "value" });
+
+            expect(mockGossamer.emit).toHaveBeenCalledWith("test:event", {
+                key: "value",
+            });
+        });
+
+        test("should warn if emit called before init", () => {
+            const consoleSpy = jest.spyOn(console, "warn").mockImplementation();
+            gossamerModule = require("../src/gossamer");
+
+            gossamerModule.emit("test:event", {});
+
+            expect(consoleSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Emit before init"),
+            );
+            consoleSpy.mockRestore();
+        });
+    });
+
+    describe("emitError", () => {
+        test("should emit error events after initialization", async () => {
+            gossamerModule = require("../src/gossamer");
+            await gossamerModule.initGossamer();
+
+            const error = new Error("Test error");
+            gossamerModule.emitError("test:error", error, { context: "test" });
+
+            expect(mockGossamer.emitError).toHaveBeenCalledWith(
+                "test:error",
+                error,
+                { context: "test" },
+            );
+        });
+    });
+
+    describe("flush", () => {
+        test("should flush transports", async () => {
+            gossamerModule = require("../src/gossamer");
+            await gossamerModule.initGossamer();
+            await gossamerModule.flush();
+
+            expect(mockGossamer.flush).toHaveBeenCalledTimes(1);
         });
     });
 });

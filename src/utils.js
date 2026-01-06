@@ -3,41 +3,6 @@
 const os = require("os");
 const config = require("./config");
 
-// --- NEW SELF-CONTAINED LOGGER ---
-const logs = new Array(config.MAX_LOG_BUFFER_SIZE);
-let logPointer = 0;
-
-function log(level, message, meta = {}) {
-    // Create a structured log object
-    const logObject = {
-        timestamp: new Date().toISOString(),
-        level: level.toUpperCase(),
-        message,
-        ...meta, // Spread the metadata into the top level of the object
-    };
-
-    // Convert the object to a JSON string for output
-    const logEntry = JSON.stringify(logObject);
-
-    // This is the circular buffer logic. O(1) every time.
-    logs[logPointer] = logEntry;
-    logPointer = (logPointer + 1) % config.MAX_LOG_BUFFER_SIZE;
-
-    // Output to the console. This is what Render will capture.
-    console.log(logEntry);
-}
-
-// New function for the /logs endpoint to call
-function getLogs() {
-    const sortedLogs = [];
-    // This "un-rolls" the circular buffer so it's in chronological order for display
-    for (let i = 0; i < config.MAX_LOG_BUFFER_SIZE; i++) {
-        const log = logs[(logPointer + i) % config.MAX_LOG_BUFFER_SIZE];
-        if (log) sortedLogs.push(log);
-    }
-    return sortedLogs;
-}
-
 // --- IP Helpers ---
 function getClientIp(req) {
     const rawIp =
@@ -63,50 +28,47 @@ function isPrivateIP(ip) {
 }
 
 function getLocalIpForDisplay() {
-    // ... same as original ...
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === "IPv4" && !iface.internal) {
+                return iface.address;
+            }
+        }
+    }
+    return "127.0.0.1";
 }
 
 // --- Graceful Shutdown ---
 function setupGracefulShutdown(server, closeWsConnectionsCallback) {
-    // <-- Accept a callback
-    const shutdown = () => {
-        log("info", "Initiating graceful shutdown...");
+    const { emit, flush } = require("./gossamer");
+
+    const shutdown = async () => {
+        emit("system:shutdown", { message: "Initiating graceful shutdown..." });
 
         // Use the provided callback function instead of requiring the module
         if (typeof closeWsConnectionsCallback === "function") {
             closeWsConnectionsCallback();
         }
 
+        // Flush Gossamer transports before exiting
+        await flush();
+
         server.close(() => {
-            log("info", "HTTP server closed.");
             process.exit(0);
         });
 
         setTimeout(() => {
-            log("warn", "Forcing shutdown after timeout.");
             process.exit(1);
         }, config.SHUTDOWN_TIMEOUT);
     };
 
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
-    process.on("uncaughtException", (error) => {
-        log("error", "UNCAUGHT EXCEPTION!", {
-            error: error.message,
-            stack: error.stack,
-        });
-        shutdown();
-    });
-    process.on("unhandledRejection", (reason) => {
-        log("error", "UNHANDLED REJECTION!", {
-            reason: reason?.toString() || "unknown",
-        });
-    });
+    // Note: uncaughtException and unhandledRejection are now handled by Gossamer's captureCrashes
 }
 
 module.exports = {
-    log,
-    getLogs,
     getClientIp,
     getCleanIPv4,
     isPrivateIP,
