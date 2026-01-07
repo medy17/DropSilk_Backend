@@ -1,4 +1,4 @@
-name: Node.js CI
+name: Bun CI
 
 on:
   push:
@@ -10,26 +10,18 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [ 18.x ]
-
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          bun-version: latest
 
       - name: Install Dependencies
-        run: npm ci
-
-      - name: Install Babel for Tests
-        run: npm install --save-dev babel-plugin-dynamic-import-node @babel/preset-env
+        run: bun install
 
       - name: Run Tests
-        run: npm test
+        run: bun run test
         env:
           CI: true
