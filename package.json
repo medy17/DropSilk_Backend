@@ -28,7 +28,7 @@
     ]
   },
   "dependencies": {
-    "@dropsilk/gossamer": "^0.7.2",
+    "@dropsilk/gossamer": "^0.7.3",
     "axios": "^1.13.2",
     "dotenv": "^17.2.3",
     "pg": "^8.16.3",
