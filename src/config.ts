@@ -1,11 +1,12 @@
-// --- src/config.js ---
+// --- src/config.ts ---
 
-const os = require("os");
+import os from "os";
+import yargsParser from "yargs-parser";
+
 const interfaces = os.networkInterfaces();
-// REMOVED: const { log } = require("./utils"); <--- CAUSED THE CYCLE
 
 // Parse CLI flags once and expose NO_DB in config
-const argv = require("yargs-parser")(process.argv.slice(2));
+const argv = yargsParser(process.argv.slice(2));
 const NO_DB =
     Boolean(argv.noDB) ||
     ["1", "true"].includes(String(process.env.NO_DB).toLowerCase());
@@ -33,17 +34,21 @@ process.argv.slice(2).forEach((arg) => {
             ALLOWED_ORIGINS.add(localOrigin1);
             ALLOWED_ORIGINS.add(localOrigin2);
 
-            // Use console.log here to avoid circular dependency with utils.js
-            console.log(JSON.stringify({
-                level: "INFO",
-                message: "Dynamically allowing local origins",
-                port,
-                origins: [localOrigin1, localOrigin2]
-            }));
+            // Use console.log here to avoid circular dependency with utils.ts
+            console.log(
+                JSON.stringify({
+                    level: "INFO",
+                    message: "Dynamically allowing local origins",
+                    port,
+                    origins: [localOrigin1, localOrigin2],
+                })
+            );
 
             // --- 192.168.x.x origins ---
             for (const name of Object.keys(interfaces)) {
-                for (const iface of interfaces[name]) {
+                const ifaces = interfaces[name];
+                if (!ifaces) continue;
+                for (const iface of ifaces) {
                     const { address, family, internal } = iface;
                     if (
                         family === "IPv4" &&
@@ -52,28 +57,50 @@ process.argv.slice(2).forEach((arg) => {
                     ) {
                         const localOrigin3 = `http://${address}:${port}`;
                         ALLOWED_ORIGINS.add(localOrigin3);
-                        console.log(JSON.stringify({
-                            level: "INFO",
-                            message: "Dynamically allowing local network origin",
-                            port,
-                            origin: localOrigin3
-                        }));
+                        console.log(
+                            JSON.stringify({
+                                level: "INFO",
+                                message: "Dynamically allowing local network origin",
+                                port,
+                                origin: localOrigin3,
+                            })
+                        );
                     }
                 }
             }
         } else {
-            console.warn(JSON.stringify({
-                level: "WARN",
-                message: "Invalid port number provided for local origin",
-                argument: arg
-            }));
+            console.warn(
+                JSON.stringify({
+                    level: "WARN",
+                    message: "Invalid port number provided for local origin",
+                    argument: arg,
+                })
+            );
         }
     }
 });
 // --- END: Logic for dynamically adding local origins ---
 
-const config = {
-    PORT: process.env.PORT || 8080,
+export interface Config {
+    PORT: number;
+    NODE_ENV: string;
+    ALLOWED_ORIGINS: Set<string>;
+    VERCEL_PREVIEW_ORIGIN_REGEX: RegExp;
+    MAX_PAYLOAD: number;
+    HEALTH_CHECK_INTERVAL: number;
+    SHUTDOWN_TIMEOUT: number;
+    LOG_ACCESS_KEY: string;
+    MAX_LOG_BUFFER_SIZE: number;
+    UPLOADTHING_TOKEN: string;
+    CLOUDFLARE_TURN_TOKEN_ID: string;
+    CLOUDFLARE_API_TOKEN: string;
+    NO_DB: boolean;
+    recaptchaSecretKey: string;
+    contactEmail: string;
+}
+
+const config: Config = {
+    PORT: Number(process.env.PORT) || 8080,
     NODE_ENV: process.env.NODE_ENV || "development",
 
     ALLOWED_ORIGINS: ALLOWED_ORIGINS,
@@ -100,4 +127,4 @@ const config = {
     contactEmail: process.env.CONTACT_EMAIL || "",
 };
 
-module.exports = config;
+export default config;

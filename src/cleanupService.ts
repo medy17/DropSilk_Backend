@@ -1,15 +1,19 @@
-// --- src/cleanupService.js ---
+// --- src/cleanupService.ts ---
 
-const { UTApi } = require("uploadthing/server");
-const db = require("./dbClient");
-const { emit } = require("./gossamer");
+import { UTApi } from "uploadthing/server";
+import * as db from "./dbClient";
+import { emit } from "./gossamer";
 
 // We initialize UTApi here.
 const utapi = new UTApi();
 
 const TWENTY_FOUR_HOURS_IN_MS = 24 * 60 * 60 * 1000;
 
-async function runCleanup() {
+interface FileRecord {
+    file_key: string;
+}
+
+export async function runCleanup(): Promise<void> {
     // If the database is not initialized, we can't do anything.
     if (!db.isDatabaseInitialized()) {
         emit("cleanup:skipped", {
@@ -23,7 +27,7 @@ async function runCleanup() {
 
         // 1. Find old file keys in OUR database
         const selectQuery = `SELECT file_key FROM uploaded_files WHERE uploaded_at <= $1`;
-        const { rows: filesToDelete } = await db.query(selectQuery, [
+        const { rows: filesToDelete } = await db.query<FileRecord>(selectQuery, [
             cutOffDate,
         ]);
 
@@ -35,7 +39,7 @@ async function runCleanup() {
             return;
         }
 
-        const fileKeys = filesToDelete.map((file) => file.file_key);
+        const fileKeys = filesToDelete.map((file: FileRecord) => file.file_key);
         emit("cleanup:start", {
             count: fileKeys.length,
             keys: fileKeys,
@@ -60,14 +64,15 @@ async function runCleanup() {
             deletedCount: deleteDbResult.rowCount,
         });
     } catch (error) {
+        const err = error as Error;
         emit("cleanup:error", {
-            error: error.message,
-            stack: error.stack,
+            error: err.message,
+            stack: err.stack,
         });
     }
 }
 
-function startCleanupService(intervalMinutes = 15) {
+export function startCleanupService(intervalMinutes: number = 15): void {
     if (!db.isDatabaseInitialized()) {
         emit("cleanup:skipped", {
             reason: "Cleanup service disabled (DB not initialised/disabled).",
@@ -84,5 +89,3 @@ function startCleanupService(intervalMinutes = 15) {
     runCleanup();
     setInterval(runCleanup, intervalMinutes * 60 * 1000);
 }
-
-module.exports = { startCleanupService, runCleanup };

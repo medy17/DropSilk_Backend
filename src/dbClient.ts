@@ -1,13 +1,13 @@
-// --- src/dbClient.js ---
+// --- src/dbClient.ts ---
 
-const { Pool } = require("pg");
-const config = require("./config");
+import { Pool, QueryResult, QueryResultRow } from "pg";
+import config from "./config";
 
-let pool;
+let pool: Pool | undefined;
 let dbInitialized = false;
 
 // Helper for early-stage logging (before Gossamer is initialized)
-const earlyLog = (level, message, meta = {}) => {
+const earlyLog = (level: string, message: string, meta: Record<string, unknown> = {}): void => {
     console.log(JSON.stringify({ level: level.toUpperCase(), message, ...meta }));
 };
 
@@ -26,8 +26,9 @@ if (config.NO_DB) {
         earlyLog("info", "🐘 Database connection pool created successfully.");
         dbInitialized = true;
     } catch (error) {
+        const err = error as Error;
         earlyLog("error", "🚨 Failed to create database connection pool", {
-            error: error.message,
+            error: err.message,
         });
         process.exit(1);
     }
@@ -35,9 +36,9 @@ if (config.NO_DB) {
     earlyLog("warn", "⚠️ DATABASE_URL not set. Database features will be disabled.");
 }
 
-const initializeDatabase = async () => {
+export async function initializeDatabase(): Promise<void> {
     // At this point, Gossamer should be initialized, so we can use emit
-    const { emit } = require("./gossamer");
+    const { emit } = await import("./gossamer");
 
     if (config.NO_DB) {
         emit("system:startup", { service: "Database", status: "disabled", reason: "--noDB flag" });
@@ -50,30 +51,34 @@ const initializeDatabase = async () => {
 
     const createTableQuery = `
         CREATE TABLE IF NOT EXISTS uploaded_files (
-                                                      id SERIAL PRIMARY KEY,
-                                                      file_key TEXT NOT NULL UNIQUE,
-                                                      file_url TEXT NOT NULL,
-                                                      file_name TEXT NOT NULL,
-                                                      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
+            id SERIAL PRIMARY KEY,
+            file_key TEXT NOT NULL UNIQUE,
+            file_url TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
     `;
 
     try {
-        await pool.query(createTableQuery);
+        await pool!.query(createTableQuery);
         emit("system:startup", { service: "Database", status: "ready", table: "uploaded_files" });
     } catch (err) {
-        emit("system:error", { service: "Database", error: err.stack });
+        const error = err as Error;
+        emit("system:error", { service: "Database", error: error.stack });
         process.exit(1);
     }
-};
+}
 
-module.exports = {
-    query: (text, params) => {
-        if (!dbInitialized) {
-            throw new Error("Database is not available.");
-        }
-        return pool.query(text, params);
-    },
-    initializeDatabase,
-    isDatabaseInitialized: () => dbInitialized,
-};
+export function query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[]
+): Promise<QueryResult<T>> {
+    if (!dbInitialized || !pool) {
+        throw new Error("Database is not available.");
+    }
+    return pool.query<T>(text, params);
+}
+
+export function isDatabaseInitialized(): boolean {
+    return dbInitialized;
+}

@@ -1,12 +1,22 @@
 // --- tests/email.test.js ---
-const axios = require("axios");
 const httpMocks = require("node-mocks-http");
 
-// Mock dependencies
-jest.mock("axios");
+// Mock axios with explicit default export structure for ESM interop
+jest.mock("axios", () => ({
+    __esModule: true,
+    default: {
+        post: jest.fn(),
+    },
+}));
+
+const axios = require("axios").default;
+
 jest.mock("../src/config", () => ({
-    recaptchaSecretKey: "mock-secret-key",
-    contactEmail: "admin@example.com",
+    __esModule: true,
+    default: {
+        recaptchaSecretKey: "mock-secret-key",
+        contactEmail: "admin@example.com",
+    },
 }));
 
 // Mock the Gossamer emit
@@ -98,7 +108,7 @@ describe("Email Service", () => {
     });
 
     test("Should emit email:error if contactEmail is not configured", async () => {
-        const config = require("../src/config");
+        const config = require("../src/config").default;
         config.contactEmail = ""; // Temporarily unset for this test
 
         const req = httpMocks.createRequest({
