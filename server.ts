@@ -1,21 +1,27 @@
-// --- server.js (Root Directory) ---
+// --- server.ts (Root Directory) ---
 
-require("dotenv").config();
+import "dotenv/config";
+import yargsParser from "yargs-parser";
 
 // Imports point to ./src/ because this file is in the root
-const { server, startServer } = require("./src/httpServer");
-const { initializeSignaling, closeConnections } = require("./src/signalingService");
-const { setupGracefulShutdown, log } = require("./src/utils");
-const { initializeDatabase } = require("./src/dbClient");
-const state = require("./src/state");
-const { startCleanupService } = require("./src/cleanupService");
+import { server, startServer } from "./src/httpServer";
+import { initializeSignaling, closeConnections } from "./src/signalingService";
+import { setupGracefulShutdown } from "./src/utils";
+import { initializeDatabase } from "./src/dbClient";
+import * as state from "./src/state";
+import { startCleanupService } from "./src/cleanupService";
 
 // --- GOSSAMER TELEMETRY ---
-const { initGossamer, emit } = require("./src/gossamer");
+import { initGossamer, emit } from "./src/gossamer";
 
-const argv = require("yargs-parser")(process.argv.slice(2));
+interface Args {
+    noDB?: boolean;
+    [key: string]: unknown;
+}
 
-async function startApp() {
+const argv = yargsParser(process.argv.slice(2)) as Args;
+
+async function startApp(): Promise<void> {
     // 1. Initialize Gossamer Telemetry FIRST
     // This ensures that when other services start up, the listeners are ready.
     await initGossamer();
@@ -61,11 +67,15 @@ async function startApp() {
     }
 }
 
-startApp().catch((error) => {
+startApp().catch((error: Error) => {
     // Failsafe logging
-    log("error", "Failed to start application", {
-        error: error.message,
-        stack: error.stack,
-    });
+    console.error(
+        JSON.stringify({
+            level: "ERROR",
+            message: "Failed to start application",
+            error: error.message,
+            stack: error.stack,
+        })
+    );
     process.exit(1);
 });

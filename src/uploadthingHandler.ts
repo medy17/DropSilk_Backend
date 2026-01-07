@@ -1,12 +1,15 @@
-// --- src/uploadthingHandler.js ---
+// --- src/uploadthingHandler.ts ---
 
-const config = require("./config");
-const db = require("./dbClient");
-const { emit } = require("./gossamer");
+import type { IncomingMessage, ServerResponse } from "http";
+import config from "./config";
+import * as db from "./dbClient";
+import { emit } from "./gossamer";
 
-let utRequestHandler = null;
+type RouteHandler = (request: Request) => Promise<Response>;
 
-async function getUtRequestHandler() {
+let utRequestHandler: RouteHandler | null = null;
+
+async function getUtRequestHandler(): Promise<RouteHandler> {
     if (utRequestHandler) return utRequestHandler;
 
     if (!config.UPLOADTHING_TOKEN) {
@@ -47,10 +50,11 @@ async function getUtRequestHandler() {
 
                         emit("upload:db_saved", { key: file.key });
                     } catch (dbError) {
+                        const err = dbError as Error;
                         emit("upload:error", {
                             context: "DB Save Failed",
                             key: file.key,
-                            error: dbError.message,
+                            error: err.message,
                         });
                     }
                 }
@@ -73,7 +77,7 @@ async function getUtRequestHandler() {
     return utRequestHandler;
 }
 
-async function nodeToWebRequest(req) {
+async function nodeToWebRequest(req: IncomingMessage): Promise<Request> {
     const url = `http://${req.headers.host}${req.url}`;
     const headers = new Headers();
     for (const [k, v] of Object.entries(req.headers)) {
@@ -86,14 +90,16 @@ async function nodeToWebRequest(req) {
         return new Request(url, { method, headers });
     }
 
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of req as AsyncIterable<Uint8Array>) {
+        chunks.push(chunk);
+    }
     const body = Buffer.concat(chunks);
     return new Request(url, { method, headers, body });
 }
 
-async function sendWebResponse(res, response) {
-    const headersObj = {};
+async function sendWebResponse(res: ServerResponse, response: Response): Promise<void> {
+    const headersObj: Record<string, string> = {};
     response.headers.forEach((val, key) => {
         headersObj[key] = val;
     });
@@ -103,7 +109,7 @@ async function sendWebResponse(res, response) {
     res.end(Buffer.from(arrayBuf));
 }
 
-function setCors(res, origin) {
+function setCors(res: ServerResponse, origin: string | undefined): void {
     if (origin) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Vary", "Origin");
@@ -113,7 +119,10 @@ function setCors(res, origin) {
     res.setHeader("Access-Control-Max-Age", "86400");
 }
 
-async function handleUploadThingRequest(req, res) {
+export async function handleUploadThingRequest(
+    req: IncomingMessage,
+    res: ServerResponse
+): Promise<void> {
     try {
         if (req.method === "OPTIONS") {
             setCors(res, req.headers.origin);
@@ -129,13 +138,12 @@ async function handleUploadThingRequest(req, res) {
         const webRes = await handler(webReq);
         await sendWebResponse(res, webRes);
     } catch (err) {
+        const error = err as Error;
         emit("upload:error", {
             context: "Handler Route Error",
-            error: err.message,
+            error: error.message,
         });
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "UploadThing routing error" }));
     }
 }
-
-module.exports = { handleUploadThingRequest };
