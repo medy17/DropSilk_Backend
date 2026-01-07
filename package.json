@@ -1,11 +1,12 @@
 {
   "name": "your-project-name",
   "version": "1.0.0",
-  "main": "dist/server.js",
+  "main": "server.ts",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "ts-node server.ts",
+    "start": "bun server.ts",
+    "start:prod": "node dist/server.js",
+    "dev": "bun server.ts --allow-local-port=5173 --noDB",
     "test": "jest --detectOpenHandles"
   },
   "jest": {
