@@ -25,7 +25,11 @@ export async function initGossamer(): Promise<void> {
     const config = require(configPath) as GossamerUserConfig;
 
     await g.init(config, {
-        transports: [new ConsolePrettyTransport({ pretty: true })],
+        transports: [
+            new ConsolePrettyTransport({
+                pretty: process.env.NODE_ENV !== "production",
+            }),
+        ],
         captureCrashes: true,
     });
 
