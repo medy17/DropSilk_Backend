@@ -73,7 +73,7 @@ and can be bypassed via an argument.
     from UploadThing and removes their associated database records. By default,
     files older than 24 hours are considered stale. The job runs once at
     startup and then on a schedule (every 60 minutes in this repo's default
-    `server.js`).
+    `server.ts`).
 
 ## API & Signaling Protocol
 
@@ -141,13 +141,14 @@ Operational notes:
 
 ## Tech Stack
 
--   Runtime: Node.js
+-   Runtime: Bun / Node.js
+-   Language: TypeScript
 -   Server: Built-in `http` module
 -   WebSockets: `ws` library
 -   NAT Traversal: Cloudflare STUN/TURN
 -   File previews: UploadThing Server SDK
 -   Database: PostgreSQL (via `pg`)
--   Testing: Jest
+-   Testing: Jest with ts-jest
 
 ## Getting Started (Local Development)
 
@@ -155,8 +156,8 @@ To run the signaling server locally, follow these steps.
 
 ### Prerequisites
 
--   Node.js (^22 or later)
--   npm / pnpm / yarn
+-   Bun (recommended) or Node.js (^22 or later)
+-   npm / pnpm / yarn / bun
 -   PostgreSQL (optional for signaling only, required to enable preview
     metadata storage and automated cleanup)
 
@@ -212,7 +213,7 @@ To run the signaling server locally, follow these steps.
 
 1.  Start the server:
     ```bash
-    node server.js
+    bun server.ts
     ```
     By default, the server will run on `http://localhost:8080`.
 
@@ -221,18 +222,25 @@ To run the signaling server locally, follow these steps.
     [DropSilk Frontend](https://github.com/medy17/dropsilk) locally (typically
     on port `5173`), allow the backend to accept that origin:
     ```bash
-    node server.js --allow-local-port=5173
+    bun server.ts --allow-local-port=5173
     ```
 
-    OR
+    OR use the dev script:
 
     ```bash
-    npm start -- --allow-local-port=5173 --noDB
+    bun run dev
     ```
     The server will now accept WebSocket connections from
     `http://localhost:5173` and `http://127.0.0.1:5173`.
 
-3.  Local database tip (optional):
+3.  Running in production (compiled):
+    ```bash
+    bun run build
+    bun run start:prod
+    ```
+    This compiles TypeScript to JavaScript and runs the compiled output.
+
+4.  Local database tip (optional):
     If you want the full preview+cleanup flow locally, make sure Postgres is
     running and `DATABASE_URL` is set in your `.env`.
 
@@ -244,7 +252,7 @@ telemetry system, ensuring that correct events are emitted for each action.
 
 To run the tests:
 ```bash
-npm test
+bun run test
 ```
 
 ### Cleanup Service Configuration
@@ -253,11 +261,11 @@ No extra setup is required: the cleanup service starts with the application,
 runs once immediately, and then on a fixed schedule.
 
 -   Retention window: 24 hours. Defined in
-    `src/cleanupService.js` as `TWENTY_FOUR_HOURS_IN_MS`.
+    `src/cleanupService.ts` as `TWENTY_FOUR_HOURS_IN_MS`.
 -   Schedule: Every 60 minutes by default in this repo. This is set in
-    `server.js` by calling `startCleanupService(60)`.
+    `server.ts` by calling `startCleanupService(60)`.
 -   To change the schedule, adjust the argument to `startCleanupService(...)`.
-    To change retention, update the constant in `cleanupService.js`.
+    To change retention, update the constant in `cleanupService.ts`.
 
 Advanced notes:
 
