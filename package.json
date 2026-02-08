@@ -6,7 +6,7 @@
     "build": "tsc",
     "start": "bun server.ts",
     "start:prod": "node dist/server.js",
-    "dev": "bun server.ts --allow-local-port=5173 --noDB",
+    "dev": "bun server.ts --allow-local-port=5173 --allow-local-port=4173 --noDB",
     "test": "jest --detectOpenHandles"
   },
   "jest": {

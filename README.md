@@ -277,10 +277,8 @@ Advanced notes:
 
 ## Deployment
 
-This server is designed to be lightweight and stateless, making it easy to
+This server is designed to be lightweight, making it easy to
 deploy on platforms like Render, Heroku, or any service that supports Node.js.
-
-The live version is currently deployed on Render.
 
 ### Required Environment Variables for Production
 
