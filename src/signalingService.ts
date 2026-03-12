@@ -5,6 +5,7 @@ import type { Server, IncomingMessage } from "http";
 import config from "./config";
 import * as state from "./state";
 import type { ClientMetadata, Flight } from "./state";
+import { removeParticipantFromRoom, resolveRoomParticipant } from "./roomStore";
 import { getClientIp, isPrivateIP } from "./utils";
 import { emit } from "./gossamer";
 
@@ -37,17 +38,153 @@ interface SignalMessage {
     data: unknown;
 }
 
+interface AttachRoomMessage {
+    type: "attach-room";
+    roomCode: string;
+    participantId: string;
+}
+
 type ClientMessage =
     | RegisterDetailsMessage
     | CreateFlightMessage
     | JoinFlightMessage
     | InviteToFlightMessage
+    | AttachRoomMessage
     | SignalMessage
     | { type: string };
 
 // --- Extended WebSocket with isAlive property ---
 interface ExtendedWebSocket extends WebSocket {
     isAlive: boolean;
+}
+
+function determineConnectionType(
+    creatorMeta: ClientMetadata,
+    joinerMeta: ClientMetadata
+): string {
+    if (creatorMeta.remoteIp === joinerMeta.remoteIp) {
+        return "lan";
+    }
+    if (
+        isPrivateIP(creatorMeta.remoteIp) &&
+        isPrivateIP(joinerMeta.remoteIp) &&
+        creatorMeta.remoteIp.split(".").slice(0, 3).join(".") ===
+            joinerMeta.remoteIp.split(".").slice(0, 3).join(".")
+    ) {
+        return "lan";
+    }
+    return "wan";
+}
+
+function attachDurableRoom(ws: WebSocket, meta: ClientMetadata, data: AttachRoomMessage): void {
+    if (
+        !data.roomCode ||
+        typeof data.roomCode !== "string" ||
+        !data.participantId ||
+        typeof data.participantId !== "string"
+    ) {
+        ws.send(
+            JSON.stringify({ type: "error", message: "Invalid room attach payload" })
+        );
+        return;
+    }
+
+    const roomParticipant = resolveRoomParticipant(
+        data.roomCode.toUpperCase(),
+        data.participantId
+    );
+
+    if (!roomParticipant) {
+        ws.send(
+            JSON.stringify({ type: "error", message: "Room not found or expired" })
+        );
+        return;
+    }
+
+    const self = roomParticipant.self;
+    meta.name = self.name;
+    meta.flightCode = roomParticipant.roomCode;
+    meta.participantId = self.participantId;
+    meta.role = self.role;
+    state.clients.set(ws, meta);
+
+    const existingFlight = state.flights[roomParticipant.roomCode] || {
+        members: [],
+        establishedAt: null,
+    };
+
+    existingFlight.members = existingFlight.members.filter((client) => {
+        if (client === ws || client.readyState !== WebSocket.OPEN) {
+            return false;
+        }
+
+        const clientMeta = state.clients.get(client);
+        return Boolean(
+            clientMeta && clientMeta.participantId !== self.participantId
+        );
+    });
+
+    existingFlight.members.push(ws);
+    state.flights[roomParticipant.roomCode] = existingFlight;
+
+    ws.send(
+        JSON.stringify({
+            type: "room-attached",
+            flightCode: roomParticipant.roomCode,
+            role: self.role,
+            peer: roomParticipant.peer,
+        })
+    );
+
+    if (!roomParticipant.peer) {
+        return;
+    }
+
+    const hostWs = existingFlight.members.find(
+        (client) => state.clients.get(client)?.role === "host"
+    );
+    const guestWs = existingFlight.members.find(
+        (client) => state.clients.get(client)?.role === "guest"
+    );
+
+    if (!hostWs || !guestWs) {
+        return;
+    }
+
+    const hostMeta = state.clients.get(hostWs);
+    const guestMeta = state.clients.get(guestWs);
+
+    if (!hostMeta || !guestMeta) {
+        return;
+    }
+
+    const connectionType = determineConnectionType(hostMeta, guestMeta);
+    existingFlight.establishedAt = existingFlight.establishedAt || Date.now();
+
+    hostWs.send(
+        JSON.stringify({
+            type: "peer-joined",
+            flightCode: roomParticipant.roomCode,
+            peer: { id: guestMeta.id, name: guestMeta.name },
+            connectionType,
+        })
+    );
+    guestWs.send(
+        JSON.stringify({
+            type: "peer-joined",
+            flightCode: roomParticipant.roomCode,
+            peer: { id: hostMeta.id, name: hostMeta.name },
+            connectionType,
+        })
+    );
+
+    emit("flight:joined", {
+        flightCode: roomParticipant.roomCode,
+        joinerId: guestMeta.id,
+        joinerName: guestMeta.name,
+        ip: guestMeta.remoteIp,
+        connectionType,
+    });
 }
 
 export function initializeSignaling(server: Server): WebSocketServer {
@@ -120,6 +257,8 @@ function handleConnection(ws: WebSocket, req: IncomingMessage): void {
         id: clientId,
         name: "Anonymous",
         flightCode: null,
+        participantId: null,
+        role: null,
         remoteIp: cleanRemoteIp,
         connectedAt: new Date().toISOString(),
         userAgent: (req.headers["user-agent"] as string) || "unknown",
@@ -184,13 +323,21 @@ function handleMessage(ws: WebSocket, message: WebSocket.RawData): void {
             error: err.message,
         });
         ws.send(
-            JSON.stringify({ type: "error", message: "Invalid message format" })
+            JSON.stringify({
+                type: "error",
+                message: "Invalid message format",
+            })
         );
         return;
     }
 
     try {
         switch (data.type) {
+            case "attach-room": {
+                attachDurableRoom(ws, meta, data as AttachRoomMessage);
+                break;
+            }
+
             case "register-details": {
                 const regData = data as RegisterDetailsMessage;
                 if (
@@ -304,18 +451,10 @@ function handleMessage(ws: WebSocket, message: WebSocket.RawData): void {
                     return;
                 }
 
-                // Logic for connection type
-                let connectionType = "wan";
-                if (creatorMeta.remoteIp === joinerMeta.remoteIp) {
-                    connectionType = "lan";
-                } else if (
-                    isPrivateIP(creatorMeta.remoteIp) &&
-                    isPrivateIP(joinerMeta.remoteIp) &&
-                    creatorMeta.remoteIp.split(".").slice(0, 3).join(".") ===
-                    joinerMeta.remoteIp.split(".").slice(0, 3).join(".")
-                ) {
-                    connectionType = "lan";
-                }
+                const connectionType = determineConnectionType(
+                    creatorMeta,
+                    joinerMeta
+                );
 
                 flight.members.push(ws);
                 flight.establishedAt = Date.now();
@@ -431,6 +570,10 @@ function handleDisconnect(ws: WebSocket): void {
 
     state.clients.delete(ws);
     state.connectionStats.totalDisconnections++;
+
+    if (meta.flightCode && meta.participantId) {
+        removeParticipantFromRoom(meta.flightCode, meta.participantId);
+    }
 
     // EMIT: Disconnected
     emit("client:disconnected", {

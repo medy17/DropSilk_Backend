@@ -8,6 +8,8 @@ export interface ClientMetadata {
     id: string;
     name: string;
     flightCode: string | null;
+    participantId: string | null;
+    role: "host" | "guest" | null;
     remoteIp: string;
     connectedAt: string;
     userAgent: string;
