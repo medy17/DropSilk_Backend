@@ -11,6 +11,7 @@ import {
     getRoomSummary,
     joinRoom,
     markParticipantReady,
+    setParticipantScreenShare,
 } from "./roomStore";
 import { getClientIp, getLocalIpForDisplay } from "./utils";
 import { handleUploadThingRequest } from "./uploadthingHandler";
@@ -166,6 +167,35 @@ export const server = http.createServer(
                                 fileCount: Number(body.fileCount) || 0,
                                 totalBytes: Number(body.totalBytes) || 0,
                             });
+
+                            if (!summary) {
+                                sendJson(res, 404, {
+                                    error: "Room not found or participant is not part of it.",
+                                });
+                                return;
+                            }
+
+                            sendJson(
+                                res,
+                                200,
+                                summary as unknown as Record<string, unknown>
+                            );
+                            return;
+                        }
+
+                        if (
+                            req.method === "POST" &&
+                            pathParts.length === 6 &&
+                            pathParts[3] === "participants" &&
+                            pathParts[5] === "screen-share"
+                        ) {
+                            const participantId = decodeURIComponent(pathParts[4]);
+                            const body = await readJsonBody(req);
+                            const summary = setParticipantScreenShare(
+                                roomCode,
+                                participantId,
+                                Boolean(body.active)
+                            );
 
                             if (!summary) {
                                 sendJson(res, 404, {

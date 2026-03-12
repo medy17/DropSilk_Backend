@@ -10,6 +10,8 @@ interface StoredRoom {
     hostName: string;
     guestParticipantId: string | null;
     guestName: string | null;
+    hostScreenShareActive?: boolean;
+    guestScreenShareActive?: boolean;
     hostReady: boolean;
     guestReady: boolean;
     hostFileCount: number;
@@ -30,6 +32,13 @@ export interface RoomParticipantSummary {
     totalBytes: number;
 }
 
+export interface RoomScreenShareSummary {
+    activeParticipantId: string | null;
+    requestedBySelf: boolean;
+    requestedByPeer: boolean;
+    isActive: boolean;
+}
+
 export interface RoomSummary {
     roomCode: string;
     status: RoomStatus;
@@ -37,6 +46,7 @@ export interface RoomSummary {
     expiresAt: string;
     self: RoomParticipantSummary;
     peer: RoomParticipantSummary | null;
+    screenShare: RoomScreenShareSummary;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -149,6 +159,13 @@ function buildSummary(room: StoredRoom, participantId: string): RoomSummary | nu
 
     const hasPeer = Boolean(room.guestParticipantId);
     const shouldConnect = hasPeer && (room.hostReady || room.guestReady);
+    const hostScreenShareActive = Boolean(room.hostScreenShareActive);
+    const guestScreenShareActive = Boolean(room.guestScreenShareActive);
+    const activeParticipantId = hostScreenShareActive
+        ? room.hostParticipantId
+        : guestScreenShareActive
+            ? room.guestParticipantId
+            : null;
     const status: RoomStatus = !hasPeer
         ? "waiting"
         : shouldConnect
@@ -162,6 +179,14 @@ function buildSummary(room: StoredRoom, participantId: string): RoomSummary | nu
         expiresAt: room.expiresAt,
         self,
         peer,
+        screenShare: {
+            activeParticipantId,
+            requestedBySelf:
+                role === "host" ? hostScreenShareActive : guestScreenShareActive,
+            requestedByPeer:
+                role === "host" ? guestScreenShareActive : hostScreenShareActive,
+            isActive: Boolean(activeParticipantId),
+        },
     };
 }
 
@@ -186,6 +211,8 @@ export function createRoom(hostName: string): RoomSummary {
         hostName: normalizeName(hostName),
         guestParticipantId: null,
         guestName: null,
+        hostScreenShareActive: false,
+        guestScreenShareActive: false,
         hostReady: false,
         guestReady: false,
         hostFileCount: 0,
@@ -281,6 +308,38 @@ export function markParticipantReady(
     return buildSummary(room, participantId);
 }
 
+export function setParticipantScreenShare(
+    roomCode: string,
+    participantId: string,
+    active: boolean
+): RoomSummary | null {
+    const normalizedCode = roomCode.toUpperCase();
+    const rooms = loadActiveRooms();
+    const room = rooms.find((candidate) => candidate.roomCode === normalizedCode);
+
+    if (!room) return null;
+
+    const normalizedActive = Boolean(active);
+
+    if (room.hostParticipantId === participantId) {
+        if (normalizedActive && room.guestScreenShareActive) {
+            throw new Error("Peer is already screen sharing");
+        }
+        room.hostScreenShareActive = normalizedActive;
+    } else if (room.guestParticipantId === participantId) {
+        if (normalizedActive && room.hostScreenShareActive) {
+            throw new Error("Peer is already screen sharing");
+        }
+        room.guestScreenShareActive = normalizedActive;
+    } else {
+        return null;
+    }
+
+    extendRoom(room);
+    writeRooms(rooms);
+    return buildSummary(room, participantId);
+}
+
 export function removeParticipantFromRoom(
     roomCode: string,
     participantId: string
@@ -303,6 +362,8 @@ export function removeParticipantFromRoom(
     if (room.guestParticipantId === participantId) {
         room.guestParticipantId = null;
         room.guestName = null;
+        room.hostScreenShareActive = false;
+        room.guestScreenShareActive = false;
         room.guestReady = false;
         room.guestFileCount = 0;
         room.guestTotalBytes = 0;
@@ -323,11 +384,13 @@ export function removeParticipantFromRoom(
 
         room.hostParticipantId = room.guestParticipantId;
         room.hostName = room.guestName || room.hostName;
+        room.hostScreenShareActive = false;
         room.hostReady = room.guestReady;
         room.hostFileCount = room.guestFileCount;
         room.hostTotalBytes = room.guestTotalBytes;
         room.guestParticipantId = null;
         room.guestName = null;
+        room.guestScreenShareActive = false;
         room.guestReady = false;
         room.guestFileCount = 0;
         room.guestTotalBytes = 0;

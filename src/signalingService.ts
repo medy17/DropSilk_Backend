@@ -11,6 +11,7 @@ import { emit } from "./gossamer";
 
 let wss: WebSocketServer | undefined;
 let healthInterval: NodeJS.Timeout | undefined;
+const screenShareFlights: Record<string, Flight> = {};
 
 // --- Message Types ---
 interface RegisterDetailsMessage {
@@ -42,6 +43,7 @@ interface AttachRoomMessage {
     type: "attach-room";
     roomCode: string;
     participantId: string;
+    channel?: "transfer" | "screen-share";
 }
 
 type ClientMessage =
@@ -76,6 +78,10 @@ function determineConnectionType(
     return "wan";
 }
 
+function getFlightRegistry(channel: ClientMetadata["channel"]): Record<string, Flight> {
+    return channel === "screen-share" ? screenShareFlights : state.flights;
+}
+
 function attachDurableRoom(ws: WebSocket, meta: ClientMetadata, data: AttachRoomMessage): void {
     if (
         !data.roomCode ||
@@ -102,13 +108,16 @@ function attachDurableRoom(ws: WebSocket, meta: ClientMetadata, data: AttachRoom
     }
 
     const self = roomParticipant.self;
+    const channel = data.channel === "screen-share" ? "screen-share" : "transfer";
     meta.name = self.name;
     meta.flightCode = roomParticipant.roomCode;
     meta.participantId = self.participantId;
     meta.role = self.role;
+    meta.channel = channel;
     state.clients.set(ws, meta);
 
-    const existingFlight = state.flights[roomParticipant.roomCode] || {
+    const flightRegistry = getFlightRegistry(channel);
+    const existingFlight = flightRegistry[roomParticipant.roomCode] || {
         members: [],
         establishedAt: null,
     };
@@ -125,7 +134,7 @@ function attachDurableRoom(ws: WebSocket, meta: ClientMetadata, data: AttachRoom
     });
 
     existingFlight.members.push(ws);
-    state.flights[roomParticipant.roomCode] = existingFlight;
+    flightRegistry[roomParticipant.roomCode] = existingFlight;
 
     ws.send(
         JSON.stringify({
@@ -178,13 +187,15 @@ function attachDurableRoom(ws: WebSocket, meta: ClientMetadata, data: AttachRoom
         })
     );
 
-    emit("flight:joined", {
-        flightCode: roomParticipant.roomCode,
-        joinerId: guestMeta.id,
-        joinerName: guestMeta.name,
-        ip: guestMeta.remoteIp,
-        connectionType,
-    });
+    if (channel === "transfer") {
+        emit("flight:joined", {
+            flightCode: roomParticipant.roomCode,
+            joinerId: guestMeta.id,
+            joinerName: guestMeta.name,
+            ip: guestMeta.remoteIp,
+            connectionType,
+        });
+    }
 }
 
 export function initializeSignaling(server: Server): WebSocketServer {
@@ -259,6 +270,7 @@ function handleConnection(ws: WebSocket, req: IncomingMessage): void {
         flightCode: null,
         participantId: null,
         role: null,
+        channel: null,
         remoteIp: cleanRemoteIp,
         connectedAt: new Date().toISOString(),
         userAgent: (req.headers["user-agent"] as string) || "unknown",
@@ -519,15 +531,17 @@ function handleMessage(ws: WebSocket, message: WebSocket.RawData): void {
 
             case "signal": {
                 const signalData = data as SignalMessage;
-                if (!meta.flightCode || !state.flights[meta.flightCode]) return;
+                const flightRegistry = getFlightRegistry(meta.channel);
+                if (!meta.flightCode || !flightRegistry[meta.flightCode]) return;
 
-                // EMIT: Signal (Captured by Story stats, usually silenced in console)
-                emit("flight:signal", {
-                    flightCode: meta.flightCode,
-                    senderId: meta.id,
-                });
+                if (meta.channel !== "screen-share") {
+                    emit("flight:signal", {
+                        flightCode: meta.flightCode,
+                        senderId: meta.id,
+                    });
+                }
 
-                state.flights[meta.flightCode].members.forEach((client) => {
+                flightRegistry[meta.flightCode].members.forEach((client) => {
                     if (client !== ws && client.readyState === WebSocket.OPEN) {
                         client.send(
                             JSON.stringify({ type: "signal", data: signalData.data })
@@ -571,7 +585,7 @@ function handleDisconnect(ws: WebSocket): void {
     state.clients.delete(ws);
     state.connectionStats.totalDisconnections++;
 
-    if (meta.flightCode && meta.participantId) {
+    if (meta.channel !== "screen-share" && meta.flightCode && meta.participantId) {
         removeParticipantFromRoom(meta.flightCode, meta.participantId);
     }
 
@@ -582,8 +596,9 @@ function handleDisconnect(ws: WebSocket): void {
         flightCode: meta.flightCode, // Pass flight code if they were in one
     });
 
-    if (meta.flightCode && state.flights[meta.flightCode]) {
-        const flightRef = state.flights[meta.flightCode];
+    const flightRegistry = getFlightRegistry(meta.channel);
+    if (meta.flightCode && flightRegistry[meta.flightCode]) {
+        const flightRef = flightRegistry[meta.flightCode];
 
         flightRef.members = flightRef.members.filter((c) => c !== ws);
 
@@ -593,12 +608,13 @@ function handleDisconnect(ws: WebSocket): void {
         });
 
         if (flightRef.members.length === 0) {
-            // EMIT: Flight Ended (Finalizes the Story)
-            emit("flight:ended", {
-                flightCode: meta.flightCode,
-                reason: "all_members_left",
-            });
-            delete state.flights[meta.flightCode];
+            if (meta.channel !== "screen-share") {
+                emit("flight:ended", {
+                    flightCode: meta.flightCode,
+                    reason: "all_members_left",
+                });
+            }
+            delete flightRegistry[meta.flightCode];
         }
     }
     broadcastUsersOnSameNetwork();
@@ -609,6 +625,7 @@ function broadcastUsersOnSameNetwork(): void {
         const clientsByNetworkGroup: Record<string, { id: string; name: string }[]> = {};
         for (const [ws, meta] of state.clients.entries()) {
             if (!meta || ws.readyState !== WebSocket.OPEN) continue;
+            if (meta.channel === "screen-share") continue;
             if (
                 meta.flightCode &&
                 state.flights[meta.flightCode] &&
@@ -629,6 +646,7 @@ function broadcastUsersOnSameNetwork(): void {
 
         for (const [ws, meta] of state.clients.entries()) {
             if (!meta || ws.readyState !== WebSocket.OPEN) continue;
+            if (meta.channel === "screen-share") continue;
 
             if (
                 meta.flightCode &&
