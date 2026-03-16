@@ -26,15 +26,14 @@ screen-sharing data are sent directly between the connected peers, ensuring
 privacy and speed.
 
 Additionally, this server provides a small set of HTTP endpoints for health
-checks, statistics, and a secure proxy for the UploadThing API, which
-facilitates file previews for formats like `.pptx`.
+checks, statistics, durable room management, and a secure proxy for the
+UploadThing API, which facilitates file previews for formats like `.pptx`.
 
-The server stores minimal metadata about preview uploads in
-PostgreSQL and runs a background cleanup service that periodically removes
-stale preview files from UploadThing and prunes their database records. This
-keeps storage lean and prevents orphaned files. It's also relevant for compliance
-with data retention and privacy laws. Running the database is ultimately optional
-and can be bypassed via an argument.
+The server stores both room state and preview upload metadata in PostgreSQL and
+runs a background cleanup service that periodically removes stale preview files
+from UploadThing and prunes their database records. This keeps storage lean and
+prevents orphaned files. It also means local development now matches production
+more closely instead of splitting durable state across JSON files and SQL.
 
 ### Core Features
 
@@ -69,6 +68,8 @@ and can be bypassed via an argument.
 -   In-memory logging: Keeps a running buffer of the most recent log events,
     accessible via the `/logs` endpoint for easy debugging without writing to
     disk.
+-   Durable room storage in PostgreSQL: Rooms, participants, readiness, and
+    screen-share state are persisted in Postgres instead of local JSON files.
 -   Automated preview cleanup service: Periodically deletes old preview files
     from UploadThing and removes their associated database records. By default,
     files older than 24 hours are considered stale. The job runs once at
@@ -116,8 +117,9 @@ The preview-and-cleanup flow works like this:
     backend `/api/uploadthing` route.
 2.  The backend authenticates with UploadThing using `UPLOADTHING_TOKEN`. On
     successful upload, `onUploadComplete` is called.
-3.  The backend stores minimal metadata in Postgres (`uploaded_files` table),
-    including `file_key`, `file_url`, `file_name`, and a timestamp.
+3.  The backend stores room state in Postgres (`rooms` table) and preview
+    upload metadata in Postgres (`uploaded_files` table), including `file_key`,
+    `file_url`, `file_name`, and a timestamp.
 4.  The cleanup service runs:
     -   It finds rows where `uploaded_at` is older than 24 hours.
     -   It calls UploadThing to delete those files (by their keys).
@@ -133,9 +135,8 @@ Operational notes:
 
 -   If the database is not initialised or `DATABASE_URL` is missing, the
     cleanup service will log and skip its run (it will not crash the server).
--   The `uploaded_files` table is created automatically on startup if DB is
-    enabled. Creation of this table is idempotent. No duplicates will be made
-    if the table already exists.
+-   The application no longer creates tables on startup. Run migrations
+    explicitly before booting the app.
 -   This cleanup is meant for preview files and short-lived assets. Adjust
     the retention to fit your needs.
 
@@ -158,8 +159,7 @@ To run the signaling server locally, follow these steps.
 
 -   Bun (recommended) or Node.js (^22 or later)
 -   npm / pnpm / yarn / bun
--   PostgreSQL (optional for signaling only, required to enable preview
-    metadata storage and automated cleanup)
+-   PostgreSQL (required for local dev and production durable state)
 
 ### Installation & Setup
 
@@ -192,10 +192,12 @@ To run the signaling server locally, follow these steps.
     CLOUDFLARE_TURN_TOKEN_ID="YOUR_CLOUDFLARE_TURN_TOKEN_ID"
     CLOUDFLARE_API_TOKEN="YOUR_CLOUDFLARE_API_TOKEN_WITH_RTC_PERMS"
 
-    # Optional in local dev; required in production if you want preview
-    # persistence and cleanup. Standard Postgres connection string:
+    # Required for local dev and production. Standard Postgres connection string:
     # postgres://USER:PASSWORD@HOST:PORT/DBNAME
     DATABASE_URL="postgres://postgres:postgres@localhost:5432/dropsilk"
+    # Optional override. Leave unset for Neon/hosted Postgres.
+    # Set to "false" for plain local Postgres if needed.
+    DATABASE_SSL="false"
 
     # In production, set this to your public server URL. In dev you can leave
     # it unset; the backend will fall back to http://localhost:8080.
@@ -203,10 +205,8 @@ To run the signaling server locally, follow these steps.
     ```
 
     Notes:
-    -   If `DATABASE_URL` is not set, DB features (metadata storage) are disabled
-        and the cleanup service will skip its work.
-    -   The server will create the `uploaded_files` table automatically when DB
-        is enabled.
+    -   Run `bun run migrate` before starting the server so the required
+        tables exist.
     -   If Cloudflare variables are not set, TURN functionality will be disabled.
 
 ### Running the Server
@@ -240,9 +240,25 @@ To run the signaling server locally, follow these steps.
     ```
     This compiles TypeScript to JavaScript and runs the compiled output.
 
-4.  Local database tip (optional):
-    If you want the full preview+cleanup flow locally, make sure Postgres is
-    running and `DATABASE_URL` is set in your `.env`.
+4.  Start local Postgres:
+    ```bash
+    docker compose up -d postgres
+    ```
+    This starts the local Postgres instance used by both room persistence and
+    preview metadata.
+
+5.  Apply migrations:
+    ```bash
+    bun run migrate
+    ```
+
+6.  For a clean local reset:
+    ```bash
+    bun run db:reset
+    bun run migrate
+    ```
+    `bun run dev` does this reset-and-migrate flow automatically before
+    starting the server.
 
 ### Testing
 
@@ -272,13 +288,17 @@ Advanced notes:
 -   The cleanup service uses UploadThing's API to delete files. If that API
     call fails, database records are not removed, ensuring consistency with
     what's actually stored remotely.
--   If you start the server with `--noDB`, DB initialisation is skipped and the
-    cleanup job will no-op (with a log message).
+-   If you start the server with `--noDB`, DB initialisation is skipped, room
+    APIs are unavailable, and the cleanup job will no-op.
+-   If required tables are missing, startup fails fast and tells you to run
+    migrations.
 
 ## Deployment
 
 This server is designed to be lightweight, making it easy to
 deploy on platforms like Render, Heroku, or any service that supports Node.js.
+In a typical setup, the frontend runs on Vercel, this backend runs on a
+separate Node host, and only the backend connects to PostgreSQL/Neon.
 
 ### Required Environment Variables for Production
 
@@ -290,9 +310,10 @@ Set these in your hosting provider's dashboard:
 -   `PUBLIC_SERVER_URL`: The public URL of your deployed server
     (e.g., `https://your-app-name.onrender.com`). Required for UploadThing's
     callback to function correctly.
--   `DATABASE_URL`: PostgreSQL connection string. Required to persist preview
-    metadata and enable the automated cleanup service. Without it, the cleanup
-    job will skip and preview files will not be removed automatically.
+-   `DATABASE_URL`: PostgreSQL connection string. Required to persist room
+    state, preview metadata, and enable the automated cleanup service.
+-   `DATABASE_SSL`: Optional override for SSL negotiation. Leave unset for Neon.
+    Use `false` for plain local Docker/Postgres if needed.
 -   `CLOUDFLARE_TURN_TOKEN_ID`: (Highly Recommended) Your TURN Token ID from the Cloudflare dashboard.
 -   `CLOUDFLARE_API_TOKEN`: (Highly Recommended) A Cloudflare API token with "RTC" read permissions. This ensures maximum connection success for users behind firewalls.
 

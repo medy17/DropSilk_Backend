@@ -1,10 +1,37 @@
 // --- src/dbClient.ts ---
 
-import { Pool, QueryResult, QueryResultRow } from "pg";
+import { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 import config from "./config";
 
 let pool: Pool | undefined;
 let dbInitialized = false;
+
+function shouldUseSsl(connectionString: string): false | { rejectUnauthorized: false } {
+    const explicitPreference = String(process.env.DATABASE_SSL || "").toLowerCase();
+    if (["0", "false", "disable", "off"].includes(explicitPreference)) {
+        return false;
+    }
+    if (["1", "true", "require", "on"].includes(explicitPreference)) {
+        return { rejectUnauthorized: false };
+    }
+
+    try {
+        const parsed = new URL(connectionString);
+        const sslMode = parsed.searchParams.get("sslmode");
+        if (sslMode === "disable") {
+            return false;
+        }
+
+        const host = parsed.hostname.toLowerCase();
+        if (["localhost", "127.0.0.1"].includes(host)) {
+            return false;
+        }
+    } catch {
+        // Fall back to SSL for hosted database providers.
+    }
+
+    return { rejectUnauthorized: false };
+}
 
 // Helper for early-stage logging (before Gossamer is initialized)
 const earlyLog = (level: string, message: string, meta: Record<string, unknown> = {}): void => {
@@ -17,11 +44,10 @@ if (config.NO_DB) {
     dbInitialized = false;
 } else if (process.env.DATABASE_URL) {
     try {
+        const connectionString = process.env.DATABASE_URL;
         pool = new Pool({
-            connectionString: process.env.DATABASE_URL,
-            ssl: {
-                rejectUnauthorized: false,
-            },
+            connectionString,
+            ssl: shouldUseSsl(connectionString),
         });
         earlyLog("info", "🐘 Database connection pool created successfully.");
         dbInitialized = true;
@@ -49,19 +75,24 @@ export async function initializeDatabase(): Promise<void> {
         return;
     }
 
-    const createTableQuery = `
-        CREATE TABLE IF NOT EXISTS uploaded_files (
-            id SERIAL PRIMARY KEY,
-            file_key TEXT NOT NULL UNIQUE,
-            file_url TEXT NOT NULL,
-            file_name TEXT NOT NULL,
-            uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-    `;
-
     try {
-        await pool!.query(createTableQuery);
-        emit("system:startup", { service: "Database", status: "ready", table: "uploaded_files" });
+        const schemaCheck = await pool!.query<{
+            rooms_exists: string | null;
+            uploaded_files_exists: string | null;
+        }>(`
+            SELECT
+                to_regclass('public.rooms')::text AS rooms_exists,
+                to_regclass('public.uploaded_files')::text AS uploaded_files_exists
+        `);
+
+        const schemaStatus = schemaCheck.rows[0];
+        if (!schemaStatus?.rooms_exists || !schemaStatus?.uploaded_files_exists) {
+            throw new Error(
+                "Database schema is missing required tables. Run migrations before starting the app."
+            );
+        }
+
+        emit("system:startup", { service: "Database", status: "ready" });
     } catch (err) {
         const error = err as Error;
         emit("system:error", { service: "Database", error: error.stack });
@@ -77,6 +108,27 @@ export function query<T extends QueryResultRow = QueryResultRow>(
         throw new Error("Database is not available.");
     }
     return pool.query<T>(text, params);
+}
+
+export async function withTransaction<T>(
+    callback: (client: PoolClient) => Promise<T>
+): Promise<T> {
+    if (!dbInitialized || !pool) {
+        throw new Error("Database is not available.");
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const result = await callback(client);
+        await client.query("COMMIT");
+        return result;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
 }
 
 export function isDatabaseInitialized(): boolean {

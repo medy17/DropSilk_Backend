@@ -6,7 +6,11 @@
     "build": "tsc",
     "start": "bun server.ts",
     "start:prod": "node dist/server.js",
-    "dev": "bun server.ts --allow-local-port=5173 --allow-local-port=4173 --noDB",
+    "dev": "bun run db:up && bun run db:reset && bun run migrate && bun server.ts --allow-local-port=5173 --allow-local-port=4173",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:reset": "bun run scripts/resetDevDb.ts",
+    "migrate": "bun run scripts/migrate.ts",
     "test": "jest --detectOpenHandles"
   },
   "jest": {
@@ -31,6 +35,7 @@
     "@dropsilk/gossamer": "^0.7.3",
     "axios": "^1.13.2",
     "dotenv": "^17.2.3",
+    "neonctl": "^2.22.0",
     "pg": "^8.16.3",
     "uploadthing": "^7.7.4",
     "ws": "^8.18.3",

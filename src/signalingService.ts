@@ -82,7 +82,11 @@ function getFlightRegistry(channel: ClientMetadata["channel"]): Record<string, F
     return channel === "screen-share" ? screenShareFlights : state.flights;
 }
 
-function attachDurableRoom(ws: WebSocket, meta: ClientMetadata, data: AttachRoomMessage): void {
+async function attachDurableRoom(
+    ws: WebSocket,
+    meta: ClientMetadata,
+    data: AttachRoomMessage
+): Promise<void> {
     if (
         !data.roomCode ||
         typeof data.roomCode !== "string" ||
@@ -95,7 +99,7 @@ function attachDurableRoom(ws: WebSocket, meta: ClientMetadata, data: AttachRoom
         return;
     }
 
-    const roomParticipant = resolveRoomParticipant(
+    const roomParticipant = await resolveRoomParticipant(
         data.roomCode.toUpperCase(),
         data.participantId
     );
@@ -294,8 +298,12 @@ function handleConnection(ws: WebSocket, req: IncomingMessage): void {
     ws.send(JSON.stringify({ type: "registered", id: clientId }));
     broadcastUsersOnSameNetwork();
 
-    ws.on("message", (message: WebSocket.RawData) => handleMessage(ws, message));
-    ws.on("close", () => handleDisconnect(ws));
+    ws.on("message", (message: WebSocket.RawData) => {
+        void handleMessage(ws, message);
+    });
+    ws.on("close", () => {
+        void handleDisconnect(ws);
+    });
     ws.on("error", (error: Error) =>
         emit("client:error", {
             clientId: metadata.id,
@@ -304,7 +312,7 @@ function handleConnection(ws: WebSocket, req: IncomingMessage): void {
     );
 }
 
-function handleMessage(ws: WebSocket, message: WebSocket.RawData): void {
+async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise<void> {
     const meta = state.clients.get(ws);
     if (!meta) {
         // Silently ignore or emit warn if desired
@@ -346,7 +354,7 @@ function handleMessage(ws: WebSocket, message: WebSocket.RawData): void {
     try {
         switch (data.type) {
             case "attach-room": {
-                attachDurableRoom(ws, meta, data as AttachRoomMessage);
+                await attachDurableRoom(ws, meta, data as AttachRoomMessage);
                 break;
             }
 
@@ -578,7 +586,7 @@ function handleMessage(ws: WebSocket, message: WebSocket.RawData): void {
     }
 }
 
-function handleDisconnect(ws: WebSocket): void {
+async function handleDisconnect(ws: WebSocket): Promise<void> {
     const meta = state.clients.get(ws);
     if (!meta) return;
 
@@ -586,7 +594,17 @@ function handleDisconnect(ws: WebSocket): void {
     state.connectionStats.totalDisconnections++;
 
     if (meta.channel !== "screen-share" && meta.flightCode && meta.participantId) {
-        removeParticipantFromRoom(meta.flightCode, meta.participantId);
+        try {
+            await removeParticipantFromRoom(meta.flightCode, meta.participantId);
+        } catch (error) {
+            const err = error as Error;
+            emit("room:error", {
+                context: "Failed to remove disconnected participant from room",
+                roomCode: meta.flightCode,
+                participantId: meta.participantId,
+                error: err.message,
+            });
+        }
     }
 
     // EMIT: Disconnected

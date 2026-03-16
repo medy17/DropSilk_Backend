@@ -1,26 +1,33 @@
-import fs from "fs";
-import path from "path";
+import type { QueryResult, QueryResultRow } from "pg";
+import { query, withTransaction } from "./dbClient";
 
 export type RoomParticipantRole = "host" | "guest";
 export type RoomStatus = "waiting" | "paired" | "ready";
 
-interface StoredRoom {
-    roomCode: string;
-    hostParticipantId: string;
-    hostName: string;
-    guestParticipantId: string | null;
-    guestName: string | null;
-    hostScreenShareActive?: boolean;
-    guestScreenShareActive?: boolean;
-    hostReady: boolean;
-    guestReady: boolean;
-    hostFileCount: number;
-    guestFileCount: number;
-    hostTotalBytes: number;
-    guestTotalBytes: number;
-    createdAt: string;
-    updatedAt: string;
-    expiresAt: string;
+interface StoredRoomRow {
+    room_code: string;
+    host_participant_id: string;
+    host_name: string;
+    guest_participant_id: string | null;
+    guest_name: string | null;
+    host_screen_share_active: boolean;
+    guest_screen_share_active: boolean;
+    host_ready: boolean;
+    guest_ready: boolean;
+    host_file_count: number;
+    guest_file_count: number;
+    host_total_bytes: number | string;
+    guest_total_bytes: number | string;
+    created_at: Date | string;
+    updated_at: Date | string;
+    expires_at: Date | string;
+}
+
+interface Queryable {
+    query<T extends QueryResultRow = StoredRoomRow>(
+        text: string,
+        params?: unknown[]
+    ): Promise<QueryResult<T>>;
 }
 
 export interface RoomParticipantSummary {
@@ -49,122 +56,109 @@ export interface RoomSummary {
     screenShare: RoomScreenShareSummary;
 }
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const STORE_PATH = path.join(DATA_DIR, "rooms.json");
 const ROOM_TTL_MS = 30 * 60 * 1000;
 
-function ensureStoreFile(): void {
-    if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    if (!fs.existsSync(STORE_PATH)) {
-        fs.writeFileSync(STORE_PATH, "[]", "utf8");
-    }
-}
+const ROOM_COLUMNS = `
+    room_code,
+    host_participant_id,
+    host_name,
+    guest_participant_id,
+    guest_name,
+    host_screen_share_active,
+    guest_screen_share_active,
+    host_ready,
+    guest_ready,
+    host_file_count,
+    guest_file_count,
+    host_total_bytes,
+    guest_total_bytes,
+    created_at,
+    updated_at,
+    expires_at
+`;
 
-function readRooms(): StoredRoom[] {
-    ensureStoreFile();
-    const raw = fs.readFileSync(STORE_PATH, "utf8");
-    try {
-        const parsed = JSON.parse(raw) as StoredRoom[];
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
-}
-
-function writeRooms(rooms: StoredRoom[]): void {
-    ensureStoreFile();
-    fs.writeFileSync(STORE_PATH, JSON.stringify(rooms, null, 2), "utf8");
-}
-
-function getExpiryIso(now: number = Date.now()): string {
-    return new Date(now + ROOM_TTL_MS).toISOString();
-}
-
-function cleanupExpiredRooms(rooms: StoredRoom[]): StoredRoom[] {
-    const now = Date.now();
-    return rooms.filter((room) => new Date(room.expiresAt).getTime() > now);
-}
-
-function persistRooms(rooms: StoredRoom[]): StoredRoom[] {
-    const cleaned = cleanupExpiredRooms(rooms);
-    writeRooms(cleaned);
-    return cleaned;
+function getExpiryDate(now: number = Date.now()): Date {
+    return new Date(now + ROOM_TTL_MS);
 }
 
 function randomId(length: number): string {
     return Math.random().toString(36).slice(2, 2 + length);
 }
 
-function generateRoomCode(existingCodes: Set<string>): string {
-    let code = "";
-    do {
-        code = Math.random().toString(36).slice(2, 8).toUpperCase();
-    } while (existingCodes.has(code) || code.length !== 6);
-    return code;
+function generateRoomCode(): string {
+    return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
-function extendRoom(room: StoredRoom): StoredRoom {
-    const nowIso = new Date().toISOString();
-    room.updatedAt = nowIso;
-    room.expiresAt = getExpiryIso();
-    return room;
+function normalizeName(name: string): string {
+    const trimmed = String(name || "").trim();
+    if (!trimmed) {
+        throw new Error("Name is required");
+    }
+    return trimmed.slice(0, 50);
+}
+
+function toIso(value: Date | string): string {
+    return new Date(value).toISOString();
+}
+
+function toNumber(value: number | string | null | undefined): number {
+    return Math.max(0, Number(value) || 0);
+}
+
+function resolveParticipantRole(
+    room: StoredRoomRow,
+    participantId: string
+): RoomParticipantRole | null {
+    if (room.host_participant_id === participantId) return "host";
+    if (room.guest_participant_id === participantId) return "guest";
+    return null;
 }
 
 function buildParticipantSummary(
-    room: StoredRoom,
+    room: StoredRoomRow,
     role: RoomParticipantRole
 ): RoomParticipantSummary {
     if (role === "host") {
         return {
-            participantId: room.hostParticipantId,
+            participantId: room.host_participant_id,
             role: "host",
-            name: room.hostName,
-            ready: room.hostReady,
-            fileCount: room.hostFileCount,
-            totalBytes: room.hostTotalBytes,
+            name: room.host_name,
+            ready: room.host_ready,
+            fileCount: room.host_file_count,
+            totalBytes: toNumber(room.host_total_bytes),
         };
     }
+
     return {
-        participantId: room.guestParticipantId || "",
+        participantId: room.guest_participant_id || "",
         role: "guest",
-        name: room.guestName || "Guest",
-        ready: room.guestReady,
-        fileCount: room.guestFileCount,
-        totalBytes: room.guestTotalBytes,
+        name: room.guest_name || "Guest",
+        ready: room.guest_ready,
+        fileCount: room.guest_file_count,
+        totalBytes: toNumber(room.guest_total_bytes),
     };
 }
 
-function resolveParticipantRole(
-    room: StoredRoom,
-    participantId: string
-): RoomParticipantRole | null {
-    if (room.hostParticipantId === participantId) return "host";
-    if (room.guestParticipantId === participantId) return "guest";
-    return null;
-}
-
-function buildSummary(room: StoredRoom, participantId: string): RoomSummary | null {
+function buildSummary(room: StoredRoomRow, participantId: string): RoomSummary | null {
     const role = resolveParticipantRole(room, participantId);
     if (!role) return null;
 
     const self = buildParticipantSummary(room, role);
     const peer =
         role === "host"
-            ? room.guestParticipantId
+            ? room.guest_participant_id
                 ? buildParticipantSummary(room, "guest")
                 : null
             : buildParticipantSummary(room, "host");
 
-    const hasPeer = Boolean(room.guestParticipantId);
-    const shouldConnect = hasPeer && (room.hostReady || room.guestReady);
-    const hostScreenShareActive = Boolean(room.hostScreenShareActive);
-    const guestScreenShareActive = Boolean(room.guestScreenShareActive);
+    const hasPeer = Boolean(room.guest_participant_id);
+    const shouldConnect = hasPeer && (room.host_ready || room.guest_ready);
+    const hostScreenShareActive = Boolean(room.host_screen_share_active);
+    const guestScreenShareActive = Boolean(room.guest_screen_share_active);
     const activeParticipantId = hostScreenShareActive
-        ? room.hostParticipantId
+        ? room.host_participant_id
         : guestScreenShareActive
-            ? room.guestParticipantId
+            ? room.guest_participant_id
             : null;
     const status: RoomStatus = !hasPeer
         ? "waiting"
@@ -173,10 +167,10 @@ function buildSummary(room: StoredRoom, participantId: string): RoomSummary | nu
             : "paired";
 
     return {
-        roomCode: room.roomCode,
+        roomCode: room.room_code,
         status,
         shouldConnect,
-        expiresAt: room.expiresAt,
+        expiresAt: toIso(room.expires_at),
         self,
         peer,
         screenShare: {
@@ -190,226 +184,356 @@ function buildSummary(room: StoredRoom, participantId: string): RoomSummary | nu
     };
 }
 
-function normalizeName(name: string): string {
-    const trimmed = String(name || "").trim();
-    if (!trimmed) {
-        throw new Error("Name is required");
+async function purgeExpiredRooms(db: Queryable): Promise<void> {
+    await db.query("DELETE FROM rooms WHERE expires_at <= NOW()");
+}
+
+async function fetchRoom(
+    db: Queryable,
+    roomCode: string,
+    lockForUpdate: boolean = false
+): Promise<StoredRoomRow | null> {
+    const lockClause = lockForUpdate ? " FOR UPDATE" : "";
+    const result = await db.query<StoredRoomRow>(
+        `SELECT ${ROOM_COLUMNS} FROM rooms WHERE room_code = $1${lockClause}`,
+        [roomCode]
+    );
+    return result.rows[0] || null;
+}
+
+async function extendRoom(db: Queryable, roomCode: string): Promise<StoredRoomRow | null> {
+    const result = await db.query<StoredRoomRow>(
+        `
+            UPDATE rooms
+            SET updated_at = NOW(), expires_at = $2
+            WHERE room_code = $1
+            RETURNING ${ROOM_COLUMNS}
+        `,
+        [roomCode, getExpiryDate()]
+    );
+    return result.rows[0] || null;
+}
+
+export async function createRoom(hostName: string): Promise<RoomSummary> {
+    const normalizedHostName = normalizeName(hostName);
+
+    await purgeExpiredRooms({
+        query: (text, params) => query(text, params),
+    });
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+        const roomCode = generateRoomCode();
+        const hostParticipantId = randomId(12);
+        const now = new Date();
+        const expiresAt = getExpiryDate(now.getTime());
+
+        try {
+            const result = await query<StoredRoomRow>(
+                `
+                    INSERT INTO rooms (
+                        room_code,
+                        host_participant_id,
+                        host_name,
+                        guest_participant_id,
+                        guest_name,
+                        host_screen_share_active,
+                        guest_screen_share_active,
+                        host_ready,
+                        guest_ready,
+                        host_file_count,
+                        guest_file_count,
+                        host_total_bytes,
+                        guest_total_bytes,
+                        created_at,
+                        updated_at,
+                        expires_at
+                    )
+                    VALUES (
+                        $1, $2, $3, NULL, NULL, FALSE, FALSE, FALSE, FALSE, 0, 0, 0, 0, $4, $4, $5
+                    )
+                    RETURNING ${ROOM_COLUMNS}
+                `,
+                [roomCode, hostParticipantId, normalizedHostName, now, expiresAt]
+            );
+
+            const summary = buildSummary(result.rows[0], hostParticipantId);
+            if (!summary) {
+                throw new Error("Failed to create room");
+            }
+            return summary;
+        } catch (error) {
+            const err = error as { code?: string };
+            if (err.code === "23505") {
+                continue;
+            }
+            throw error;
+        }
     }
-    return trimmed.slice(0, 50);
+
+    throw new Error("Failed to allocate unique room code");
 }
 
-function loadActiveRooms(): StoredRoom[] {
-    return persistRooms(readRooms());
-}
-
-export function createRoom(hostName: string): RoomSummary {
-    const rooms = loadActiveRooms();
-    const roomCode = generateRoomCode(new Set(rooms.map((room) => room.roomCode)));
-    const room: StoredRoom = {
-        roomCode,
-        hostParticipantId: randomId(12),
-        hostName: normalizeName(hostName),
-        guestParticipantId: null,
-        guestName: null,
-        hostScreenShareActive: false,
-        guestScreenShareActive: false,
-        hostReady: false,
-        guestReady: false,
-        hostFileCount: 0,
-        guestFileCount: 0,
-        hostTotalBytes: 0,
-        guestTotalBytes: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        expiresAt: getExpiryIso(),
-    };
-
-    rooms.push(room);
-    writeRooms(rooms);
-
-    const summary = buildSummary(room, room.hostParticipantId);
-    if (!summary) {
-        throw new Error("Failed to create room");
-    }
-    return summary;
-}
-
-export function joinRoom(roomCode: string, guestName: string): RoomSummary {
+export async function joinRoom(roomCode: string, guestName: string): Promise<RoomSummary> {
     const normalizedCode = roomCode.toUpperCase();
-    const rooms = loadActiveRooms();
-    const room = rooms.find((candidate) => candidate.roomCode === normalizedCode);
+    const normalizedGuestName = normalizeName(guestName);
 
-    if (!room) {
-        throw new Error("Room not found or expired");
-    }
-    if (room.guestParticipantId) {
-        throw new Error("Room already has two participants");
-    }
+    return withTransaction(async (client) => {
+        await purgeExpiredRooms(client);
+        const room = await fetchRoom(client, normalizedCode, true);
 
-    room.guestParticipantId = randomId(12);
-    room.guestName = normalizeName(guestName);
-    extendRoom(room);
-    writeRooms(rooms);
+        if (!room) {
+            throw new Error("Room not found or expired");
+        }
+        if (room.guest_participant_id) {
+            throw new Error("Room already has two participants");
+        }
 
-    const summary = buildSummary(room, room.guestParticipantId);
-    if (!summary) {
-        throw new Error("Failed to join room");
-    }
-    return summary;
+        const guestParticipantId = randomId(12);
+        const result = await client.query<StoredRoomRow>(
+            `
+                UPDATE rooms
+                SET
+                    guest_participant_id = $2,
+                    guest_name = $3,
+                    updated_at = NOW(),
+                    expires_at = $4
+                WHERE room_code = $1
+                RETURNING ${ROOM_COLUMNS}
+            `,
+            [normalizedCode, guestParticipantId, normalizedGuestName, getExpiryDate()]
+        );
+
+        const summary = buildSummary(result.rows[0], guestParticipantId);
+        if (!summary) {
+            throw new Error("Failed to join room");
+        }
+        return summary;
+    });
 }
 
-export function getRoomSummary(
+export async function getRoomSummary(
     roomCode: string,
     participantId: string
-): RoomSummary | null {
+): Promise<RoomSummary | null> {
     const normalizedCode = roomCode.toUpperCase();
-    const rooms = loadActiveRooms();
-    const room = rooms.find((candidate) => candidate.roomCode === normalizedCode);
 
-    if (!room) return null;
+    return withTransaction(async (client) => {
+        await purgeExpiredRooms(client);
+        const room = await fetchRoom(client, normalizedCode, true);
+        if (!room) return null;
 
-    extendRoom(room);
-    writeRooms(rooms);
-    return buildSummary(room, participantId);
+        const initialSummary = buildSummary(room, participantId);
+        if (!initialSummary) return null;
+
+        const extendedRoom = await extendRoom(client, normalizedCode);
+        return extendedRoom ? buildSummary(extendedRoom, participantId) : null;
+    });
 }
 
 export function touchParticipant(
     roomCode: string,
     participantId: string
-): RoomSummary | null {
+): Promise<RoomSummary | null> {
     return getRoomSummary(roomCode, participantId);
 }
 
-export function markParticipantReady(
+export async function markParticipantReady(
     roomCode: string,
     participantId: string,
     payload: { fileCount?: number; totalBytes?: number } = {}
-): RoomSummary | null {
+): Promise<RoomSummary | null> {
     const normalizedCode = roomCode.toUpperCase();
-    const rooms = loadActiveRooms();
-    const room = rooms.find((candidate) => candidate.roomCode === normalizedCode);
 
-    if (!room) return null;
+    return withTransaction(async (client) => {
+        await purgeExpiredRooms(client);
+        const room = await fetchRoom(client, normalizedCode, true);
+        if (!room) return null;
 
-    if (room.hostParticipantId === participantId) {
-        room.hostReady = true;
-        room.hostFileCount = Math.max(0, Number(payload.fileCount) || 0);
-        room.hostTotalBytes = Math.max(0, Number(payload.totalBytes) || 0);
-    } else if (room.guestParticipantId === participantId) {
-        room.guestReady = true;
-        room.guestFileCount = Math.max(0, Number(payload.fileCount) || 0);
-        room.guestTotalBytes = Math.max(0, Number(payload.totalBytes) || 0);
-    } else {
-        return null;
-    }
+        let updateQuery = "";
+        if (room.host_participant_id === participantId) {
+            updateQuery = `
+                UPDATE rooms
+                SET
+                    host_ready = TRUE,
+                    host_file_count = $2,
+                    host_total_bytes = $3,
+                    updated_at = NOW(),
+                    expires_at = $4
+                WHERE room_code = $1
+                RETURNING ${ROOM_COLUMNS}
+            `;
+        } else if (room.guest_participant_id === participantId) {
+            updateQuery = `
+                UPDATE rooms
+                SET
+                    guest_ready = TRUE,
+                    guest_file_count = $2,
+                    guest_total_bytes = $3,
+                    updated_at = NOW(),
+                    expires_at = $4
+                WHERE room_code = $1
+                RETURNING ${ROOM_COLUMNS}
+            `;
+        } else {
+            return null;
+        }
 
-    extendRoom(room);
-    writeRooms(rooms);
-    return buildSummary(room, participantId);
+        const result = await client.query<StoredRoomRow>(updateQuery, [
+            normalizedCode,
+            toNumber(payload.fileCount),
+            toNumber(payload.totalBytes),
+            getExpiryDate(),
+        ]);
+
+        return buildSummary(result.rows[0], participantId);
+    });
 }
 
-export function setParticipantScreenShare(
+export async function setParticipantScreenShare(
     roomCode: string,
     participantId: string,
     active: boolean
-): RoomSummary | null {
+): Promise<RoomSummary | null> {
     const normalizedCode = roomCode.toUpperCase();
-    const rooms = loadActiveRooms();
-    const room = rooms.find((candidate) => candidate.roomCode === normalizedCode);
-
-    if (!room) return null;
-
     const normalizedActive = Boolean(active);
 
-    if (room.hostParticipantId === participantId) {
-        if (normalizedActive && room.guestScreenShareActive) {
-            throw new Error("Peer is already screen sharing");
-        }
-        room.hostScreenShareActive = normalizedActive;
-    } else if (room.guestParticipantId === participantId) {
-        if (normalizedActive && room.hostScreenShareActive) {
-            throw new Error("Peer is already screen sharing");
-        }
-        room.guestScreenShareActive = normalizedActive;
-    } else {
-        return null;
-    }
+    return withTransaction(async (client) => {
+        await purgeExpiredRooms(client);
+        const room = await fetchRoom(client, normalizedCode, true);
+        if (!room) return null;
 
-    extendRoom(room);
-    writeRooms(rooms);
-    return buildSummary(room, participantId);
+        let updateQuery = "";
+        if (room.host_participant_id === participantId) {
+            if (normalizedActive && room.guest_screen_share_active) {
+                throw new Error("Peer is already screen sharing");
+            }
+            updateQuery = `
+                UPDATE rooms
+                SET
+                    host_screen_share_active = $2,
+                    updated_at = NOW(),
+                    expires_at = $3
+                WHERE room_code = $1
+                RETURNING ${ROOM_COLUMNS}
+            `;
+        } else if (room.guest_participant_id === participantId) {
+            if (normalizedActive && room.host_screen_share_active) {
+                throw new Error("Peer is already screen sharing");
+            }
+            updateQuery = `
+                UPDATE rooms
+                SET
+                    guest_screen_share_active = $2,
+                    updated_at = NOW(),
+                    expires_at = $3
+                WHERE room_code = $1
+                RETURNING ${ROOM_COLUMNS}
+            `;
+        } else {
+            return null;
+        }
+
+        const result = await client.query<StoredRoomRow>(updateQuery, [
+            normalizedCode,
+            normalizedActive,
+            getExpiryDate(),
+        ]);
+
+        return buildSummary(result.rows[0], participantId);
+    });
 }
 
-export function removeParticipantFromRoom(
+export async function removeParticipantFromRoom(
     roomCode: string,
     participantId: string
-): {
+): Promise<{
     removed: boolean;
     remainingParticipantId: string | null;
-} {
+}> {
     const normalizedCode = roomCode.toUpperCase();
-    const rooms = loadActiveRooms();
-    const roomIndex = rooms.findIndex(
-        (candidate) => candidate.roomCode === normalizedCode
-    );
 
-    if (roomIndex === -1) {
-        return { removed: false, remainingParticipantId: null };
-    }
-
-    const room = rooms[roomIndex];
-
-    if (room.guestParticipantId === participantId) {
-        room.guestParticipantId = null;
-        room.guestName = null;
-        room.hostScreenShareActive = false;
-        room.guestScreenShareActive = false;
-        room.guestReady = false;
-        room.guestFileCount = 0;
-        room.guestTotalBytes = 0;
-        extendRoom(room);
-        writeRooms(rooms);
-        return {
-            removed: true,
-            remainingParticipantId: room.hostParticipantId,
-        };
-    }
-
-    if (room.hostParticipantId === participantId) {
-        if (!room.guestParticipantId) {
-            rooms.splice(roomIndex, 1);
-            writeRooms(rooms);
-            return { removed: true, remainingParticipantId: null };
+    return withTransaction(async (client) => {
+        await purgeExpiredRooms(client);
+        const room = await fetchRoom(client, normalizedCode, true);
+        if (!room) {
+            return { removed: false, remainingParticipantId: null };
         }
 
-        room.hostParticipantId = room.guestParticipantId;
-        room.hostName = room.guestName || room.hostName;
-        room.hostScreenShareActive = false;
-        room.hostReady = room.guestReady;
-        room.hostFileCount = room.guestFileCount;
-        room.hostTotalBytes = room.guestTotalBytes;
-        room.guestParticipantId = null;
-        room.guestName = null;
-        room.guestScreenShareActive = false;
-        room.guestReady = false;
-        room.guestFileCount = 0;
-        room.guestTotalBytes = 0;
-        extendRoom(room);
-        writeRooms(rooms);
-        return {
-            removed: true,
-            remainingParticipantId: room.hostParticipantId,
-        };
-    }
+        if (room.guest_participant_id === participantId) {
+            const result = await client.query<StoredRoomRow>(
+                `
+                    UPDATE rooms
+                    SET
+                        guest_participant_id = NULL,
+                        guest_name = NULL,
+                        host_screen_share_active = FALSE,
+                        guest_screen_share_active = FALSE,
+                        guest_ready = FALSE,
+                        guest_file_count = 0,
+                        guest_total_bytes = 0,
+                        updated_at = NOW(),
+                        expires_at = $2
+                    WHERE room_code = $1
+                    RETURNING ${ROOM_COLUMNS}
+                `,
+                [normalizedCode, getExpiryDate()]
+            );
 
-    return { removed: false, remainingParticipantId: null };
+            return {
+                removed: true,
+                remainingParticipantId: result.rows[0].host_participant_id,
+            };
+        }
+
+        if (room.host_participant_id === participantId) {
+            if (!room.guest_participant_id) {
+                await client.query("DELETE FROM rooms WHERE room_code = $1", [normalizedCode]);
+                return { removed: true, remainingParticipantId: null };
+            }
+
+            const result = await client.query<StoredRoomRow>(
+                `
+                    UPDATE rooms
+                    SET
+                        host_participant_id = guest_participant_id,
+                        host_name = COALESCE(guest_name, host_name),
+                        host_screen_share_active = FALSE,
+                        host_ready = guest_ready,
+                        host_file_count = guest_file_count,
+                        host_total_bytes = guest_total_bytes,
+                        guest_participant_id = NULL,
+                        guest_name = NULL,
+                        guest_screen_share_active = FALSE,
+                        guest_ready = FALSE,
+                        guest_file_count = 0,
+                        guest_total_bytes = 0,
+                        updated_at = NOW(),
+                        expires_at = $2
+                    WHERE room_code = $1
+                    RETURNING ${ROOM_COLUMNS}
+                `,
+                [normalizedCode, getExpiryDate()]
+            );
+
+            return {
+                removed: true,
+                remainingParticipantId: result.rows[0].host_participant_id,
+            };
+        }
+
+        return { removed: false, remainingParticipantId: null };
+    });
 }
 
-export function resolveRoomParticipant(
+export async function resolveRoomParticipant(
     roomCode: string,
     participantId: string
-): { roomCode: string; self: RoomParticipantSummary; peer: RoomParticipantSummary | null } | null {
-    const summary = getRoomSummary(roomCode, participantId);
+): Promise<{
+    roomCode: string;
+    self: RoomParticipantSummary;
+    peer: RoomParticipantSummary | null;
+} | null> {
+    const summary = await getRoomSummary(roomCode, participantId);
     if (!summary) return null;
     return {
         roomCode: summary.roomCode,

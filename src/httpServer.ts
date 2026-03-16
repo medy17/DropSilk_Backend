@@ -113,7 +113,7 @@ export const server = http.createServer(
                 try {
                     if (req.method === "POST" && pathParts.length === 2) {
                         const body = await readJsonBody(req);
-                        const summary = createRoom(String(body.name || ""));
+                        const summary = await createRoom(String(body.name || ""));
                         sendJson(res, 201, summary as unknown as Record<string, unknown>);
                         return;
                     }
@@ -123,7 +123,7 @@ export const server = http.createServer(
 
                         if (req.method === "GET" && pathParts.length === 3) {
                             const participantId = url.searchParams.get("participantId") || "";
-                            const summary = getRoomSummary(roomCode, participantId);
+                            const summary = await getRoomSummary(roomCode, participantId);
 
                             if (!summary) {
                                 sendJson(res, 404, {
@@ -146,7 +146,7 @@ export const server = http.createServer(
                             pathParts[3] === "join"
                         ) {
                             const body = await readJsonBody(req);
-                            const summary = joinRoom(roomCode, String(body.name || ""));
+                            const summary = await joinRoom(roomCode, String(body.name || ""));
                             sendJson(
                                 res,
                                 200,
@@ -163,7 +163,7 @@ export const server = http.createServer(
                         ) {
                             const participantId = decodeURIComponent(pathParts[4]);
                             const body = await readJsonBody(req);
-                            const summary = markParticipantReady(roomCode, participantId, {
+                            const summary = await markParticipantReady(roomCode, participantId, {
                                 fileCount: Number(body.fileCount) || 0,
                                 totalBytes: Number(body.totalBytes) || 0,
                             });
@@ -191,7 +191,7 @@ export const server = http.createServer(
                         ) {
                             const participantId = decodeURIComponent(pathParts[4]);
                             const body = await readJsonBody(req);
-                            const summary = setParticipantScreenShare(
+                            const summary = await setParticipantScreenShare(
                                 roomCode,
                                 participantId,
                                 Boolean(body.active)

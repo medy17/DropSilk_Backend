@@ -19,6 +19,7 @@
     },
     "include": [
         "src/**/*",
+        "scripts/**/*",
         "server.ts",
         "gossamer.config.ts"
     ],
