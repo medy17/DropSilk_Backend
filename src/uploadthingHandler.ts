@@ -31,8 +31,10 @@ async function getUtRequestHandler(): Promise<RouteHandler> {
                 return { uploadedBy: "dropsilk-preview" };
             })
             .onUploadComplete(async ({ file }) => {
+                const publicUrl = file.ufsUrl;
+
                 emit("upload:success", {
-                    url: file.url,
+                    url: publicUrl,
                     key: file.key,
                 });
 
@@ -44,7 +46,7 @@ async function getUtRequestHandler(): Promise<RouteHandler> {
                         `;
                         await db.query(insertQuery, [
                             file.key,
-                            file.url,
+                            publicUrl,
                             file.name,
                         ]);
 
@@ -58,7 +60,7 @@ async function getUtRequestHandler(): Promise<RouteHandler> {
                         });
                     }
                 }
-                return { url: file.url };
+                return { url: publicUrl };
             }),
     };
 

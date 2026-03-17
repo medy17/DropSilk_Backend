@@ -2,12 +2,11 @@
 
 import { UTApi } from "uploadthing/server";
 import * as db from "./dbClient";
+import config from "./config";
 import { emit } from "./gossamer";
 
 // We initialize UTApi here.
 const utapi = new UTApi();
-
-const TWENTY_FOUR_HOURS_IN_MS = 24 * 60 * 60 * 1000;
 
 interface FileRecord {
     file_key: string;
@@ -23,7 +22,7 @@ export async function runCleanup(): Promise<void> {
     }
 
     try {
-        const cutOffDate = new Date(Date.now() - TWENTY_FOUR_HOURS_IN_MS);
+        const cutOffDate = new Date(Date.now() - config.PREVIEW_RETENTION_MS);
 
         // 1. Find old file keys in OUR database
         const selectQuery = `SELECT file_key FROM uploaded_files WHERE uploaded_at <= $1`;
@@ -72,7 +71,9 @@ export async function runCleanup(): Promise<void> {
     }
 }
 
-export function startCleanupService(intervalMinutes: number = 15): void {
+export function startCleanupService(
+    intervalMinutes: number = config.PREVIEW_CLEANUP_INTERVAL_MINUTES
+): void {
     if (!db.isDatabaseInitialized()) {
         emit("cleanup:skipped", {
             reason: "Cleanup service disabled (DB not initialised/disabled).",

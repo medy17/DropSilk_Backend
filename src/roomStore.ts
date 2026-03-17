@@ -1,5 +1,6 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { query, withTransaction } from "./dbClient";
+import config from "./config";
 
 export type RoomParticipantRole = "host" | "guest";
 export type RoomStatus = "waiting" | "paired" | "ready";
@@ -56,8 +57,6 @@ export interface RoomSummary {
     screenShare: RoomScreenShareSummary;
 }
 
-const ROOM_TTL_MS = 30 * 60 * 1000;
-
 const ROOM_COLUMNS = `
     room_code,
     host_participant_id,
@@ -78,7 +77,7 @@ const ROOM_COLUMNS = `
 `;
 
 function getExpiryDate(now: number = Date.now()): Date {
-    return new Date(now + ROOM_TTL_MS);
+    return new Date(now + config.ROOM_TTL_MS);
 }
 
 function randomId(length: number): string {
@@ -184,10 +183,6 @@ function buildSummary(room: StoredRoomRow, participantId: string): RoomSummary |
     };
 }
 
-async function purgeExpiredRooms(db: Queryable): Promise<void> {
-    await db.query("DELETE FROM rooms WHERE expires_at <= NOW()");
-}
-
 async function fetchRoom(
     db: Queryable,
     roomCode: string,
@@ -195,31 +190,44 @@ async function fetchRoom(
 ): Promise<StoredRoomRow | null> {
     const lockClause = lockForUpdate ? " FOR UPDATE" : "";
     const result = await db.query<StoredRoomRow>(
-        `SELECT ${ROOM_COLUMNS} FROM rooms WHERE room_code = $1${lockClause}`,
+        `
+            SELECT ${ROOM_COLUMNS}
+            FROM rooms
+            WHERE room_code = $1 AND expires_at > NOW()
+            ${lockClause}
+        `,
         [roomCode]
     );
     return result.rows[0] || null;
 }
 
-async function extendRoom(db: Queryable, roomCode: string): Promise<StoredRoomRow | null> {
+async function extendRoom(
+    db: Queryable,
+    roomCode: string,
+    participantId?: string
+): Promise<StoredRoomRow | null> {
+    const participantClause = participantId
+        ? "AND (host_participant_id = $3 OR guest_participant_id = $3)"
+        : "";
+    const params = participantId
+        ? [roomCode, getExpiryDate(), participantId]
+        : [roomCode, getExpiryDate()];
     const result = await db.query<StoredRoomRow>(
         `
             UPDATE rooms
             SET updated_at = NOW(), expires_at = $2
             WHERE room_code = $1
+              AND expires_at > NOW()
+              ${participantClause}
             RETURNING ${ROOM_COLUMNS}
         `,
-        [roomCode, getExpiryDate()]
+        params
     );
     return result.rows[0] || null;
 }
 
 export async function createRoom(hostName: string): Promise<RoomSummary> {
     const normalizedHostName = normalizeName(hostName);
-
-    await purgeExpiredRooms({
-        query: (text, params) => query(text, params),
-    });
 
     for (let attempt = 0; attempt < 10; attempt++) {
         const roomCode = generateRoomCode();
@@ -278,7 +286,6 @@ export async function joinRoom(roomCode: string, guestName: string): Promise<Roo
     const normalizedGuestName = normalizeName(guestName);
 
     return withTransaction(async (client) => {
-        await purgeExpiredRooms(client);
         const room = await fetchRoom(client, normalizedCode, true);
 
         if (!room) {
@@ -316,18 +323,8 @@ export async function getRoomSummary(
     participantId: string
 ): Promise<RoomSummary | null> {
     const normalizedCode = roomCode.toUpperCase();
-
-    return withTransaction(async (client) => {
-        await purgeExpiredRooms(client);
-        const room = await fetchRoom(client, normalizedCode, true);
-        if (!room) return null;
-
-        const initialSummary = buildSummary(room, participantId);
-        if (!initialSummary) return null;
-
-        const extendedRoom = await extendRoom(client, normalizedCode);
-        return extendedRoom ? buildSummary(extendedRoom, participantId) : null;
-    });
+    const extendedRoom = await extendRoom({ query }, normalizedCode, participantId);
+    return extendedRoom ? buildSummary(extendedRoom, participantId) : null;
 }
 
 export function touchParticipant(
@@ -345,7 +342,6 @@ export async function markParticipantReady(
     const normalizedCode = roomCode.toUpperCase();
 
     return withTransaction(async (client) => {
-        await purgeExpiredRooms(client);
         const room = await fetchRoom(client, normalizedCode, true);
         if (!room) return null;
 
@@ -398,7 +394,6 @@ export async function setParticipantScreenShare(
     const normalizedActive = Boolean(active);
 
     return withTransaction(async (client) => {
-        await purgeExpiredRooms(client);
         const room = await fetchRoom(client, normalizedCode, true);
         if (!room) return null;
 
@@ -453,7 +448,6 @@ export async function removeParticipantFromRoom(
     const normalizedCode = roomCode.toUpperCase();
 
     return withTransaction(async (client) => {
-        await purgeExpiredRooms(client);
         const room = await fetchRoom(client, normalizedCode, true);
         if (!room) {
             return { removed: false, remainingParticipantId: null };
@@ -540,4 +534,9 @@ export async function resolveRoomParticipant(
         self: summary.self,
         peer: summary.peer,
     };
+}
+
+export async function deleteExpiredRooms(): Promise<number> {
+    const result = await query("DELETE FROM rooms WHERE expires_at <= NOW()");
+    return result.rowCount || 0;
 }

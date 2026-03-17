@@ -38,11 +38,7 @@ const earlyLog = (level: string, message: string, meta: Record<string, unknown> 
     console.log(JSON.stringify({ level: level.toUpperCase(), message, ...meta }));
 };
 
-// Honour --noDB / NO_DB
-if (config.NO_DB) {
-    earlyLog("info", "🛑 Database disabled via --noDB/NO_DB. Skipping DB initialisation.");
-    dbInitialized = false;
-} else if (process.env.DATABASE_URL) {
+if (process.env.DATABASE_URL) {
     try {
         const connectionString = process.env.DATABASE_URL;
         pool = new Pool({
@@ -59,20 +55,16 @@ if (config.NO_DB) {
         process.exit(1);
     }
 } else {
-    earlyLog("warn", "⚠️ DATABASE_URL not set. Database features will be disabled.");
+    earlyLog("error", "🚨 DATABASE_URL is required.");
+    process.exit(1);
 }
 
 export async function initializeDatabase(): Promise<void> {
     // At this point, Gossamer should be initialized, so we can use emit
     const { emit } = await import("./gossamer");
 
-    if (config.NO_DB) {
-        emit("system:startup", { service: "Database", status: "disabled", reason: "--noDB flag" });
-        return;
-    }
     if (!dbInitialized) {
-        emit("system:startup", { service: "Database", status: "skipped", reason: "not initialized" });
-        return;
+        throw new Error("Database failed to initialize.");
     }
 
     try {

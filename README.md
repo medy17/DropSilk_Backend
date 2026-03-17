@@ -2,11 +2,11 @@
   <img src="https://raw.githubusercontent.com/medy17/dropsilk/refs/heads/main/frontend/public/logo.webp" alt="DropSilk Logo" width="100" />
   <h1>DropSilk - Backend Signaling Server</h1>
   <p>
-    The lightweight, in-memory signaling and API server for the <a href="https://github.com/medy17/dropsilk">DropSilk</a> project.
+    The lightweight, signaling and API server for the <a href="https://github.com/medy17/dropsilk">DropSilk</a> project.
   </p>
 
   <div>
-    <img src="https://img.shields.io/badge/Node.js-^22-339933?style=for-the-badge&logo=node.js" alt="Node.js version"/>
+    <img src="https://img.shields.io/badge/bun-282a36?style=for-the-badge&logo=bun&logoColor=fbf0df" alt="Bun runtime"/>
     <img src="https://img.shields.io/github/license/medy17/dropsilk_backend?style=for-the-badge" alt="License"/>
   </div>
 </div>
@@ -27,13 +27,13 @@ privacy and speed.
 
 Additionally, this server provides a small set of HTTP endpoints for health
 checks, statistics, durable room management, and a secure proxy for the
-UploadThing API, which facilitates file previews for formats like `.pptx`.
+UploadThing API, which facilitates previews for some complex, non-client
+side render-able files.
 
 The server stores both room state and preview upload metadata in PostgreSQL and
 runs a background cleanup service that periodically removes stale preview files
 from UploadThing and prunes their database records. This keeps storage lean and
-prevents orphaned files. It also means local development now matches production
-more closely instead of splitting durable state across JSON files and SQL.
+prevents orphaned files. 
 
 ### Core Features
 
@@ -54,9 +54,11 @@ more closely instead of splitting durable state across JSON files and SQL.
     -   `GET /stats`: Real-time server statistics.
     -   `GET /logs`: A secure, key-protected endpoint to view recent in-memory
         server logs for debugging.
-    -   `GET /keep-alive`: Lightweight ping endpoint.
+    -   `GET /keep-alive`: Lightweight ping endpoint. Useful for services that sleep dormant instances.
     -   `GET /api/turn-credentials`: Securely provides clients with temporary STUN/TURN
         server credentials from Cloudflare to improve peer-to-peer connection success rates (NAT traversal).
+    -   Room endpoints under `/api/rooms`: create rooms, join rooms, fetch room
+        summaries, and update participant readiness or screen-share state.
 -   Secure upload endpoint: Provides a route (`/api/uploadthing`) that securely
     handles authentication and requests for the UploadThing service, used for
     generating file previews on the frontend.
@@ -69,7 +71,9 @@ more closely instead of splitting durable state across JSON files and SQL.
     accessible via the `/logs` endpoint for easy debugging without writing to
     disk.
 -   Durable room storage in PostgreSQL: Rooms, participants, readiness, and
-    screen-share state are persisted in Postgres instead of local JSON files.
+    screen-share state are persisted in Postgres.
+-   Background room cleanup: Expired rooms are pruned by a periodic cleanup
+    worker instead of on every room request.
 -   Automated preview cleanup service: Periodically deletes old preview files
     from UploadThing and removes their associated database records. By default,
     files older than 24 hours are considered stale. The job runs once at
@@ -119,7 +123,8 @@ The preview-and-cleanup flow works like this:
     successful upload, `onUploadComplete` is called.
 3.  The backend stores room state in Postgres (`rooms` table) and preview
     upload metadata in Postgres (`uploaded_files` table), including `file_key`,
-    `file_url`, `file_name`, and a timestamp.
+    `file_url`, `file_name`, and a timestamp. The preview URL stored there uses
+    UploadThing's `ufsUrl`.
 4.  The cleanup service runs:
     -   It finds rows where `uploaded_at` is older than 24 hours.
     -   It calls UploadThing to delete those files (by their keys).
@@ -128,27 +133,30 @@ The preview-and-cleanup flow works like this:
     -   If UploadThing deletion fails, it logs the failure and skips DB deletion
         for those keys to avoid dangling references to files that still exist.
 5.  This job runs once on startup and then at a fixed interval (60 minutes by
-    default in `server.js`). The retention window and schedule can be adjusted
-    in code.
+    default). The retention window and schedule can be adjusted
+    in your environment variables.
 
 Operational notes:
 
--   If the database is not initialised or `DATABASE_URL` is missing, the
-    cleanup service will log and skip its run (it will not crash the server).
--   The application no longer creates tables on startup. Run migrations
-    explicitly before booting the app.
+-   If the database is not initialised or `DATABASE_URL` is missing, the server 
+    will immediately crash. You must set this.
+-   The application does not create tables on startup. You must run migrations
+    explicitly before booting the app. This does not apply to the dev server
+    script (`bun run dev`), which drops all tables and reapplies migrations to
+    provide a fresh copy on every boot.
 -   This cleanup is meant for preview files and short-lived assets. Adjust
     the retention to fit your needs.
 
 ## Tech Stack
 
--   Runtime: Bun / Node.js
+-   Runtime: Bun
 -   Language: TypeScript
 -   Server: Built-in `http` module
 -   WebSockets: `ws` library
 -   NAT Traversal: Cloudflare STUN/TURN
 -   File previews: UploadThing Server SDK
 -   Database: PostgreSQL (via `pg`)
+-   Docker: Dev Server PostgreSQL instance.
 -   Testing: Jest with ts-jest
 
 ## Getting Started (Local Development)
@@ -157,8 +165,8 @@ To run the signaling server locally, follow these steps.
 
 ### Prerequisites
 
--   Bun (recommended) or Node.js (^22 or later)
--   npm / pnpm / yarn / bun
+-   Bun
+-   Docker (required for PostgreSQL)
 -   PostgreSQL (required for local dev and production durable state)
 
 ### Installation & Setup
@@ -171,7 +179,7 @@ To run the signaling server locally, follow these steps.
 
 2.  Install dependencies:
     ```bash
-    npm install
+    bun install
     ```
 
 3.  Set up environment variables:
@@ -182,7 +190,7 @@ To run the signaling server locally, follow these steps.
     # .env
 
     # Required for the PPTX preview feature. Get this from UploadThing.
-    UPLOADTHING_TOKEN="YOUR_SECRET_KEY_HERE"
+    UPLOADTHING_TOKEN="eyJhcGl...="
 
     # A secret key to protect the /logs endpoint.
     LOG_ACCESS_KEY="a-very-secret-and-random-string-for-logs"
@@ -195,9 +203,28 @@ To run the signaling server locally, follow these steps.
     # Required for local dev and production. Standard Postgres connection string:
     # postgres://USER:PASSWORD@HOST:PORT/DBNAME
     DATABASE_URL="postgres://postgres:postgres@localhost:5432/dropsilk"
+
     # Optional override. Leave unset for Neon/hosted Postgres.
     # Set to "false" for plain local Postgres if needed.
     DATABASE_SSL="false"
+
+    # Allowed origins and preview URL pattern. This is an example only.
+    # If you self-host, make sure the regex matches your URLs.
+    ALLOWED_ORIGINS="https://dropsilk.xyz,https://www.dropsilk.xyz,https://dropsilk.vercel.app,app://."
+    VERCEL_PREVIEW_ORIGIN_REGEX="^https://dropsilk-[a-zA-Z0-9]+-ahmed-arats-projects\\.vercel\\.app$"
+
+    # WebSocket / runtime tuning. Sane defaults exist so these are optional.
+    MAX_PAYLOAD_BYTES=1048576
+    WS_HEALTH_CHECK_INTERVAL_MS=30000
+    SHUTDOWN_TIMEOUT_MS=10000
+    HEARTBEAT_INTERVAL_MS=300000
+    MAX_LOG_BUFFER_SIZE=1000
+
+    # Room and cleanup tuning. Sane defaults exist so these are optional.
+    ROOM_TTL_MINUTES=30
+    ROOM_CLEANUP_INTERVAL_MINUTES=5
+    PREVIEW_RETENTION_HOURS=24
+    PREVIEW_CLEANUP_INTERVAL_MINUTES=60
 
     # In production, set this to your public server URL. In dev you can leave
     # it unset; the backend will fall back to http://localhost:8080.
@@ -205,54 +232,59 @@ To run the signaling server locally, follow these steps.
     ```
 
     Notes:
-    -   Run `bun run migrate` before starting the server so the required
-        tables exist.
-    -   If Cloudflare variables are not set, TURN functionality will be disabled.
+    -   Run `bun run migrate` before starting the server for the first time
+        so the required tables exist.
+    -   `UPLOADTHING_TOKEN` must be provided under that exact env var name.
+        `UPLOADTHING_SECRET` is not read by the current code.
+    -   **If Cloudflare variables are not set, TURN functionality will be disabled.** It is
+        highly recommended that you set these up for higher connection success rates.
 
 ### Running the Server
 
-1.  Start the server:
+1.  Quick start for local development:
+    ```bash
+    bun install
+    docker compose up -d postgres
+    bun run dev
+    ```
+    This starts local Postgres, resets the local database, reapplies
+    migrations, and runs the backend with the local frontend ports already
+    allowed.
+
+2.  Manual local startup:
+    Start local Postgres:
+    ```bash
+    docker compose up -d postgres
+    ```
+
+    Apply migrations:
+    ```bash
+    bun run migrate
+    ```
+
+    Start the server:
     ```bash
     bun server.ts
     ```
     By default, the server will run on `http://localhost:8080`.
 
-2.  Running with the frontend:
+3.  Running with the frontend manually:
     When running the
     [DropSilk Frontend](https://github.com/medy17/dropsilk) locally (typically
     on port `5173`), allow the backend to accept that origin:
     ```bash
     bun server.ts --allow-local-port=5173
     ```
-
-    OR use the dev script:
-
-    ```bash
-    bun run dev
-    ```
-    The server will now accept WebSocket connections from
+    The server will then accept WebSocket connections from
     `http://localhost:5173` and `http://127.0.0.1:5173`.
 
-3.  Running in production (compiled):
+4.  Running in production:
     ```bash
-    bun run build
-    bun run start:prod
+    bun run start
     ```
-    This compiles TypeScript to JavaScript and runs the compiled output.
+    This runs the server with Bun, which is the primary runtime for this repo.
 
-4.  Start local Postgres:
-    ```bash
-    docker compose up -d postgres
-    ```
-    This starts the local Postgres instance used by both room persistence and
-    preview metadata.
-
-5.  Apply migrations:
-    ```bash
-    bun run migrate
-    ```
-
-6.  For a clean local reset:
+5.  For a clean local reset:
     ```bash
     bun run db:reset
     bun run migrate
@@ -274,31 +306,36 @@ bun run test
 ### Cleanup Service Configuration
 
 No extra setup is required: the cleanup service starts with the application,
-runs once immediately, and then on a fixed schedule.
+runs once immediately, and then on a fixed schedule. If you need to tweak the defaults,
+set your preferred values as environment variables.
 
--   Retention window: 24 hours. Defined in
-    `src/cleanupService.ts` as `TWENTY_FOUR_HOURS_IN_MS`.
--   Schedule: Every 60 minutes by default in this repo. This is set in
-    `server.ts` by calling `startCleanupService(60)`.
--   To change the schedule, adjust the argument to `startCleanupService(...)`.
-    To change retention, update the constant in `cleanupService.ts`.
+-   Preview retention window: Controlled by `PREVIEW_RETENTION_HOURS`.
+    Default: `24`.
+-   Preview cleanup schedule: Controlled by
+    `PREVIEW_CLEANUP_INTERVAL_MINUTES`. Default: `60`.
+-   Room expiration window: Controlled by `ROOM_TTL_MINUTES`.
+    Default: `30`.
+-   Room cleanup schedule: Controlled by `ROOM_CLEANUP_INTERVAL_MINUTES`.
+    Default: `5`.
+-   Server heartbeat interval: Controlled by `HEARTBEAT_INTERVAL_MS`.
+    Default: `300000`.
 
 Advanced notes:
 
 -   The cleanup service uses UploadThing's API to delete files. If that API
     call fails, database records are not removed, ensuring consistency with
     what's actually stored remotely.
--   If you start the server with `--noDB`, DB initialisation is skipped, room
-    APIs are unavailable, and the cleanup job will no-op.
+-   The server requires a valid `DATABASE_URL`. If it is missing or the schema
+    has not been migrated, startup fails fast.
 -   If required tables are missing, startup fails fast and tells you to run
     migrations.
 
 ## Deployment
 
 This server is designed to be lightweight, making it easy to
-deploy on platforms like Render, Heroku, or any service that supports Node.js.
+deploy on platforms like Render or any service that supports Bun.
 In a typical setup, the frontend runs on Vercel, this backend runs on a
-separate Node host, and only the backend connects to PostgreSQL/Neon.
+separate backend host, and only the backend connects to PostgreSQL.
 
 ### Required Environment Variables for Production
 
@@ -315,7 +352,8 @@ Set these in your hosting provider's dashboard:
 -   `DATABASE_SSL`: Optional override for SSL negotiation. Leave unset for Neon.
     Use `false` for plain local Docker/Postgres if needed.
 -   `CLOUDFLARE_TURN_TOKEN_ID`: (Highly Recommended) Your TURN Token ID from the Cloudflare dashboard.
--   `CLOUDFLARE_API_TOKEN`: (Highly Recommended) A Cloudflare API token with "RTC" read permissions. This ensures maximum connection success for users behind firewalls.
+-   `CLOUDFLARE_API_TOKEN`: (Highly Recommended) A Cloudflare API token with "RTC" read permissions.
+     This ensures maximum connection success for users behind firewalls.
 
 ### Origin Security and Previews
 

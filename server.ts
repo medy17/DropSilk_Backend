@@ -1,7 +1,6 @@
 // --- server.ts (Root Directory) ---
 
 import "dotenv/config";
-import yargsParser from "yargs-parser";
 
 // Imports point to ./src/ because this file is in the root
 import { server, startServer } from "./src/httpServer";
@@ -10,16 +9,11 @@ import { setupGracefulShutdown } from "./src/utils";
 import { initializeDatabase } from "./src/dbClient";
 import * as state from "./src/state";
 import { startCleanupService } from "./src/cleanupService";
+import { startRoomCleanupService, stopRoomCleanupService } from "./src/roomCleanupService";
+import config from "./src/config";
 
 // --- GOSSAMER TELEMETRY ---
 import { initGossamer, emit } from "./src/gossamer";
-
-interface Args {
-    noDB?: boolean;
-    [key: string]: unknown;
-}
-
-const argv = yargsParser(process.argv.slice(2)) as Args;
 
 async function startApp(): Promise<void> {
     // 1. Initialize Gossamer Telemetry FIRST
@@ -27,9 +21,7 @@ async function startApp(): Promise<void> {
     await initGossamer();
 
     // 2. Conditionally initialize the database
-    if (!argv.noDB) {
-        await initializeDatabase();
-    }
+    await initializeDatabase();
 
     // 3. Initialize the WebSocket signaling service
     initializeSignaling(server);
@@ -38,10 +30,12 @@ async function startApp(): Promise<void> {
     startServer();
 
     // 5. Set up graceful shutdown
-    setupGracefulShutdown(server, closeConnections);
+    setupGracefulShutdown(server, () => {
+        stopRoomCleanupService();
+        closeConnections();
+    });
 
     // 6. Start the server heartbeat
-    const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
     setInterval(() => {
         const memoryUsage = process.memoryUsage();
         const stats = {
@@ -55,16 +49,11 @@ async function startApp(): Promise<void> {
 
         // Emit heartbeat event
         emit("system:heartbeat", stats);
-    }, HEARTBEAT_INTERVAL_MS);
+    }, config.HEARTBEAT_INTERVAL_MS);
 
     // 7. Start the cleanup service
-    if (!argv.noDB) {
-        startCleanupService(60);
-    } else {
-        emit("cleanup:skipped", {
-            reason: "Cleanup service disabled via --noDB flag",
-        });
-    }
+    startCleanupService(config.PREVIEW_CLEANUP_INTERVAL_MINUTES);
+    startRoomCleanupService(config.ROOM_CLEANUP_INTERVAL_MINUTES);
 }
 
 startApp().catch((error: Error) => {

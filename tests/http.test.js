@@ -14,7 +14,6 @@ jest.mock("../src/config", () => ({
     VERCEL_PREVIEW_ORIGIN_REGEX: /^https:\/\/.*\.vercel\.app$/,
     CLOUDFLARE_TURN_TOKEN_ID: "fake-id",
     CLOUDFLARE_API_TOKEN: "fake-token",
-    NO_DB: true,
 }));
 
 jest.mock("../src/uploadthingHandler", () => ({

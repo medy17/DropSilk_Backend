@@ -75,7 +75,7 @@ describe("UploadThing Handler", () => {
         const fileData = {
             file: {
                 key: "123-abc",
-                url: "https://utfs.io/f/123-abc",
+                ufsUrl: "https://utfs.io/f/123-abc",
                 name: "test.pptx",
             },
         };

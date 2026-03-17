@@ -1,23 +1,53 @@
 // --- src/config.ts ---
 
 import os from "os";
-import yargsParser from "yargs-parser";
 
 const interfaces = os.networkInterfaces();
 
-// Parse CLI flags once and expose NO_DB in config
-const argv = yargsParser(process.argv.slice(2));
-const NO_DB =
-    Boolean(argv.noDB) ||
-    ["1", "true"].includes(String(process.env.NO_DB).toLowerCase());
+function parseNumberEnv(name: string, fallback: number): number {
+    const raw = process.env[name];
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseCsvEnv(name: string, fallback: string[]): string[] {
+    const raw = process.env[name];
+    if (!raw) return fallback;
+
+    const values = raw
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+
+    return values.length > 0 ? values : fallback;
+}
+
+function parseRegexEnv(name: string, fallback: RegExp): RegExp {
+    const raw = process.env[name];
+    if (!raw) return fallback;
+
+    try {
+        return new RegExp(raw);
+    } catch {
+        console.warn(
+            JSON.stringify({
+                level: "WARN",
+                message: "Invalid regex provided in environment",
+                variable: name,
+                value: raw,
+            })
+        );
+        return fallback;
+    }
+}
 
 // --- START: Logic for dynamically adding local origins ---
-const baseAllowedOrigins = [
+const baseAllowedOrigins = parseCsvEnv("ALLOWED_ORIGINS", [
     "https://dropsilk.xyz",
     "https://www.dropsilk.xyz",
     "https://dropsilk.vercel.app",
     "app://.",
-];
+]);
 
 const ALLOWED_ORIGINS = new Set(baseAllowedOrigins);
 const localPortArgPrefix = "--allow-local-port=";
@@ -94,9 +124,13 @@ export interface Config {
     UPLOADTHING_TOKEN: string;
     CLOUDFLARE_TURN_TOKEN_ID: string;
     CLOUDFLARE_API_TOKEN: string;
-    NO_DB: boolean;
     recaptchaSecretKey: string;
     contactEmail: string;
+    HEARTBEAT_INTERVAL_MS: number;
+    ROOM_TTL_MS: number;
+    PREVIEW_RETENTION_MS: number;
+    PREVIEW_CLEANUP_INTERVAL_MINUTES: number;
+    ROOM_CLEANUP_INTERVAL_MINUTES: number;
 }
 
 const config: Config = {
@@ -105,26 +139,38 @@ const config: Config = {
 
     ALLOWED_ORIGINS: ALLOWED_ORIGINS,
 
-    VERCEL_PREVIEW_ORIGIN_REGEX:
-        /^https:\/\/dropsilk-[a-zA-Z0-9]+-ahmed-arats-projects\.vercel\.app$/,
+    VERCEL_PREVIEW_ORIGIN_REGEX: parseRegexEnv(
+        "VERCEL_PREVIEW_ORIGIN_REGEX",
+        /^https:\/\/dropsilk-[a-zA-Z0-9]+-ahmed-arats-projects\.vercel\.app$/
+    ),
 
-    MAX_PAYLOAD: 1024 * 1024,
-    HEALTH_CHECK_INTERVAL: 30000,
-    SHUTDOWN_TIMEOUT: 10000,
+    MAX_PAYLOAD: parseNumberEnv("MAX_PAYLOAD_BYTES", 1024 * 1024),
+    HEALTH_CHECK_INTERVAL: parseNumberEnv("WS_HEALTH_CHECK_INTERVAL_MS", 30000),
+    SHUTDOWN_TIMEOUT: parseNumberEnv("SHUTDOWN_TIMEOUT_MS", 10000),
 
     LOG_ACCESS_KEY:
         process.env.LOG_ACCESS_KEY || "change-this-secret-key-in-production",
-    MAX_LOG_BUFFER_SIZE: 1000,
+    MAX_LOG_BUFFER_SIZE: parseNumberEnv("MAX_LOG_BUFFER_SIZE", 1000),
 
     UPLOADTHING_TOKEN: process.env.UPLOADTHING_TOKEN || "",
 
     CLOUDFLARE_TURN_TOKEN_ID: process.env.CLOUDFLARE_TURN_TOKEN_ID || "",
     CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || "",
 
-    NO_DB,
-
     recaptchaSecretKey: process.env.RECAPTCHA_SECRET_KEY || "",
     contactEmail: process.env.CONTACT_EMAIL || "",
+    HEARTBEAT_INTERVAL_MS: parseNumberEnv("HEARTBEAT_INTERVAL_MS", 5 * 60 * 1000),
+    ROOM_TTL_MS: parseNumberEnv("ROOM_TTL_MINUTES", 30) * 60 * 1000,
+    PREVIEW_RETENTION_MS:
+        parseNumberEnv("PREVIEW_RETENTION_HOURS", 24) * 60 * 60 * 1000,
+    PREVIEW_CLEANUP_INTERVAL_MINUTES: parseNumberEnv(
+        "PREVIEW_CLEANUP_INTERVAL_MINUTES",
+        60
+    ),
+    ROOM_CLEANUP_INTERVAL_MINUTES: parseNumberEnv(
+        "ROOM_CLEANUP_INTERVAL_MINUTES",
+        5
+    ),
 };
 
 export default config;

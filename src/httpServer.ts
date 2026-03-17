@@ -13,6 +13,7 @@ import {
     markParticipantReady,
     setParticipantScreenShare,
 } from "./roomStore";
+import { matchRoute } from "./routeMatcher";
 import { getClientIp, getLocalIpForDisplay } from "./utils";
 import { handleUploadThingRequest } from "./uploadthingHandler";
 import { handleRequestEmail } from "./emailService";
@@ -99,9 +100,8 @@ export const server = http.createServer(
         try {
             const url = new URL(req.url || "/", `http://${req.headers.host}`);
             const clientIp = getClientIp(req);
-            const pathParts = url.pathname.split("/").filter(Boolean);
 
-            if (pathParts[0] === "api" && pathParts[1] === "rooms") {
+            if (url.pathname === "/api/rooms" || url.pathname.startsWith("/api/rooms/")) {
                 setRoomCors(res, req);
 
                 if (req.method === "OPTIONS") {
@@ -111,106 +111,110 @@ export const server = http.createServer(
                 }
 
                 try {
-                    if (req.method === "POST" && pathParts.length === 2) {
+                    const createRoomRoute = matchRoute(
+                        req.method,
+                        url.pathname,
+                        "POST",
+                        "/api/rooms"
+                    );
+                    if (createRoomRoute) {
                         const body = await readJsonBody(req);
                         const summary = await createRoom(String(body.name || ""));
                         sendJson(res, 201, summary as unknown as Record<string, unknown>);
                         return;
                     }
 
-                    if (pathParts.length >= 3) {
-                        const roomCode = pathParts[2].toUpperCase();
+                    const getRoomRoute = matchRoute(
+                        req.method,
+                        url.pathname,
+                        "GET",
+                        "/api/rooms/:roomCode"
+                    );
+                    if (getRoomRoute) {
+                        const participantId = url.searchParams.get("participantId") || "";
+                        const summary = await getRoomSummary(
+                            getRoomRoute.roomCode.toUpperCase(),
+                            participantId
+                        );
 
-                        if (req.method === "GET" && pathParts.length === 3) {
-                            const participantId = url.searchParams.get("participantId") || "";
-                            const summary = await getRoomSummary(roomCode, participantId);
-
-                            if (!summary) {
-                                sendJson(res, 404, {
-                                    error: "Room not found or participant is not part of it.",
-                                });
-                                return;
-                            }
-
-                            sendJson(
-                                res,
-                                200,
-                                summary as unknown as Record<string, unknown>
-                            );
+                        if (!summary) {
+                            sendJson(res, 404, {
+                                error: "Room not found or participant is not part of it.",
+                            });
                             return;
                         }
 
-                        if (
-                            req.method === "POST" &&
-                            pathParts.length === 4 &&
-                            pathParts[3] === "join"
-                        ) {
-                            const body = await readJsonBody(req);
-                            const summary = await joinRoom(roomCode, String(body.name || ""));
-                            sendJson(
-                                res,
-                                200,
-                                summary as unknown as Record<string, unknown>
-                            );
-                            return;
-                        }
+                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
+                        return;
+                    }
 
-                        if (
-                            req.method === "POST" &&
-                            pathParts.length === 6 &&
-                            pathParts[3] === "participants" &&
-                            pathParts[5] === "ready"
-                        ) {
-                            const participantId = decodeURIComponent(pathParts[4]);
-                            const body = await readJsonBody(req);
-                            const summary = await markParticipantReady(roomCode, participantId, {
+                    const joinRoomRoute = matchRoute(
+                        req.method,
+                        url.pathname,
+                        "POST",
+                        "/api/rooms/:roomCode/join"
+                    );
+                    if (joinRoomRoute) {
+                        const body = await readJsonBody(req);
+                        const summary = await joinRoom(
+                            joinRoomRoute.roomCode.toUpperCase(),
+                            String(body.name || "")
+                        );
+                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
+                        return;
+                    }
+
+                    const readyRoute = matchRoute(
+                        req.method,
+                        url.pathname,
+                        "POST",
+                        "/api/rooms/:roomCode/participants/:participantId/ready"
+                    );
+                    if (readyRoute) {
+                        const body = await readJsonBody(req);
+                        const summary = await markParticipantReady(
+                            readyRoute.roomCode.toUpperCase(),
+                            readyRoute.participantId,
+                            {
                                 fileCount: Number(body.fileCount) || 0,
                                 totalBytes: Number(body.totalBytes) || 0,
+                            }
+                        );
+
+                        if (!summary) {
+                            sendJson(res, 404, {
+                                error: "Room not found or participant is not part of it.",
                             });
-
-                            if (!summary) {
-                                sendJson(res, 404, {
-                                    error: "Room not found or participant is not part of it.",
-                                });
-                                return;
-                            }
-
-                            sendJson(
-                                res,
-                                200,
-                                summary as unknown as Record<string, unknown>
-                            );
                             return;
                         }
 
-                        if (
-                            req.method === "POST" &&
-                            pathParts.length === 6 &&
-                            pathParts[3] === "participants" &&
-                            pathParts[5] === "screen-share"
-                        ) {
-                            const participantId = decodeURIComponent(pathParts[4]);
-                            const body = await readJsonBody(req);
-                            const summary = await setParticipantScreenShare(
-                                roomCode,
-                                participantId,
-                                Boolean(body.active)
-                            );
+                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
+                        return;
+                    }
 
-                            if (!summary) {
-                                sendJson(res, 404, {
-                                    error: "Room not found or participant is not part of it.",
-                                });
-                                return;
-                            }
+                    const screenShareRoute = matchRoute(
+                        req.method,
+                        url.pathname,
+                        "POST",
+                        "/api/rooms/:roomCode/participants/:participantId/screen-share"
+                    );
+                    if (screenShareRoute) {
+                        const body = await readJsonBody(req);
+                        const summary = await setParticipantScreenShare(
+                            screenShareRoute.roomCode.toUpperCase(),
+                            screenShareRoute.participantId,
+                            Boolean(body.active)
+                        );
 
-                            sendJson(
-                                res,
-                                200,
-                                summary as unknown as Record<string, unknown>
-                            );
+                        if (!summary) {
+                            sendJson(res, 404, {
+                                error: "Room not found or participant is not part of it.",
+                            });
                             return;
                         }
+
+                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
+                        return;
                     }
 
                     sendJson(res, 404, { error: "Room endpoint not found." });
