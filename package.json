@@ -6,7 +6,7 @@
     "build": "tsc",
     "start": "bun server.ts",
     "start:prod": "node dist/server.js",
-    "dev": "bun run db:up && bun run db:reset && bun run migrate && bun server.ts --allow-local-port=5173 --allow-local-port=4173",
+    "dev": "bun run scripts/devRunner.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:reset": "bun run scripts/resetDevDb.ts",
@@ -37,6 +37,7 @@
     "dotenv": "^17.2.3",
     "neonctl": "^2.22.0",
     "pg": "^8.16.3",
+    "picocolors": "^1.1.1",
     "uploadthing": "^7.7.4",
     "ws": "^8.18.3",
     "yargs-parser": "^21.1.1"

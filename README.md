@@ -251,6 +251,11 @@ To run the signaling server locally, follow these steps.
     migrations, and runs the backend with the local frontend ports already
     allowed.
 
+    While `bun run dev` is running in an interactive terminal, you can use:
+    -   `h` to reload only the backend process without resetting the database.
+    -   `r` to perform a full dev restart (`db:reset` + `migrate` + server restart).
+    -   `q` or `Ctrl+C` to quit the dev runner and stop the local Docker Postgres container.
+
 2.  Manual local startup:
     Start local Postgres:
     ```bash
