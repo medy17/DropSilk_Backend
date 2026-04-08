@@ -95,6 +95,19 @@ function setEmailCors(res: ServerResponse, req: IncomingMessage): void {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
+function formatUptime(seconds: number): string {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const parts: string[] = [];
+    if (d > 0) parts.push(`${d}d`);
+    if (h > 0) parts.push(`${h}h`);
+    if (m > 0) parts.push(`${m}m`);
+    parts.push(`${s}s`);
+    return parts.join(" ");
+}
+
 export const server = http.createServer(
     async (req: IncomingMessage, res: ServerResponse) => {
         try {
@@ -372,6 +385,66 @@ export const server = http.createServer(
                     res.end(data);
                 });
                 return;
+            }
+
+            // Status API endpoint (for the status page)
+            if (url.pathname === "/api/status") {
+                setRoomCors(res, req);
+
+                if (req.method === "OPTIONS") {
+                    res.writeHead(204);
+                    res.end();
+                    return;
+                }
+
+                if (req.method === "GET") {
+                    const uptimeSeconds = process.uptime();
+                    const mem = process.memoryUsage();
+                    const status = {
+                        status: "operational",
+                        version: process.env.npm_package_version || "unknown",
+                        uptime: uptimeSeconds,
+                        uptimeFormatted: formatUptime(uptimeSeconds),
+                        timestamp: new Date().toISOString(),
+                        services: {
+                            websocket: {
+                                status: "operational",
+                                activeConnections: state.clients.size,
+                            },
+                            signaling: {
+                                status: "operational",
+                                activeFlights: Object.keys(state.flights).length,
+                            },
+                            turn: {
+                                status:
+                                    config.CLOUDFLARE_TURN_TOKEN_ID &&
+                                    config.CLOUDFLARE_API_TOKEN
+                                        ? "operational"
+                                        : "not_configured",
+                            },
+                        },
+                        stats: {
+                            totalConnections:
+                                state.connectionStats.totalConnections,
+                            totalDisconnections:
+                                state.connectionStats.totalDisconnections,
+                            totalFlightsCreated:
+                                state.connectionStats.totalFlightsCreated,
+                            totalFlightsJoined:
+                                state.connectionStats.totalFlightsJoined,
+                        },
+                        memory: {
+                            heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+                            heapTotalMB: Math.round(
+                                mem.heapTotal / 1024 / 1024
+                            ),
+                            rssMB: Math.round(mem.rss / 1024 / 1024),
+                        },
+                    };
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify(status));
+                    return;
+                }
             }
 
             // Health check & Stats
