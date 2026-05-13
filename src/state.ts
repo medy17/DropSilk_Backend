@@ -10,7 +10,7 @@ export interface ClientMetadata {
     flightCode: string | null;
     participantId: string | null;
     role: "host" | "guest" | null;
-    channel: "transfer" | "screen-share" | null;
+    channel: "transfer" | "screen-share" | "chat" | null;
     remoteIp: string;
     connectedAt: string;
     userAgent: string;

@@ -11,6 +11,7 @@ import {
     getRoomSummary,
     joinRoom,
     markParticipantReady,
+    setParticipantChatActive,
     setParticipantScreenShare,
 } from "./roomStore";
 import { matchRoute } from "./routeMatcher";
@@ -216,6 +217,31 @@ export const server = http.createServer(
                         const summary = await setParticipantScreenShare(
                             screenShareRoute.roomCode.toUpperCase(),
                             screenShareRoute.participantId,
+                            Boolean(body.active)
+                        );
+
+                        if (!summary) {
+                            sendJson(res, 404, {
+                                error: "Room not found or participant is not part of it.",
+                            });
+                            return;
+                        }
+
+                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
+                        return;
+                    }
+
+                    const chatRoute = matchRoute(
+                        req.method,
+                        url.pathname,
+                        "POST",
+                        "/api/rooms/:roomCode/participants/:participantId/chat"
+                    );
+                    if (chatRoute) {
+                        const body = await readJsonBody(req);
+                        const summary = await setParticipantChatActive(
+                            chatRoute.roomCode.toUpperCase(),
+                            chatRoute.participantId,
                             Boolean(body.active)
                         );
 

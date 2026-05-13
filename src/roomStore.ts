@@ -13,6 +13,8 @@ interface StoredRoomRow {
     guest_name: string | null;
     host_screen_share_active: boolean;
     guest_screen_share_active: boolean;
+    host_chat_active: boolean;
+    guest_chat_active: boolean;
     host_ready: boolean;
     guest_ready: boolean;
     host_file_count: number;
@@ -47,6 +49,12 @@ export interface RoomScreenShareSummary {
     isActive: boolean;
 }
 
+export interface RoomChatSummary {
+    requestedBySelf: boolean;
+    requestedByPeer: boolean;
+    isActive: boolean;
+}
+
 export interface RoomSummary {
     roomCode: string;
     status: RoomStatus;
@@ -55,6 +63,7 @@ export interface RoomSummary {
     self: RoomParticipantSummary;
     peer: RoomParticipantSummary | null;
     screenShare: RoomScreenShareSummary;
+    chat: RoomChatSummary;
 }
 
 const ROOM_COLUMNS = `
@@ -65,6 +74,8 @@ const ROOM_COLUMNS = `
     guest_name,
     host_screen_share_active,
     guest_screen_share_active,
+    host_chat_active,
+    guest_chat_active,
     host_ready,
     guest_ready,
     host_file_count,
@@ -154,6 +165,8 @@ function buildSummary(room: StoredRoomRow, participantId: string): RoomSummary |
     const shouldConnect = hasPeer && (room.host_ready || room.guest_ready);
     const hostScreenShareActive = Boolean(room.host_screen_share_active);
     const guestScreenShareActive = Boolean(room.guest_screen_share_active);
+    const hostChatActive = Boolean(room.host_chat_active);
+    const guestChatActive = Boolean(room.guest_chat_active);
     const activeParticipantId = hostScreenShareActive
         ? room.host_participant_id
         : guestScreenShareActive
@@ -179,6 +192,11 @@ function buildSummary(room: StoredRoomRow, participantId: string): RoomSummary |
             requestedByPeer:
                 role === "host" ? guestScreenShareActive : hostScreenShareActive,
             isActive: Boolean(activeParticipantId),
+        },
+        chat: {
+            requestedBySelf: role === "host" ? hostChatActive : guestChatActive,
+            requestedByPeer: role === "host" ? guestChatActive : hostChatActive,
+            isActive: hostChatActive || guestChatActive,
         },
     };
 }
@@ -246,6 +264,8 @@ export async function createRoom(hostName: string): Promise<RoomSummary> {
                         guest_name,
                         host_screen_share_active,
                         guest_screen_share_active,
+                        host_chat_active,
+                        guest_chat_active,
                         host_ready,
                         guest_ready,
                         host_file_count,
@@ -257,7 +277,7 @@ export async function createRoom(hostName: string): Promise<RoomSummary> {
                         expires_at
                     )
                     VALUES (
-                        $1, $2, $3, NULL, NULL, FALSE, FALSE, FALSE, FALSE, 0, 0, 0, 0, $4, $4, $5
+                        $1, $2, $3, NULL, NULL, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 0, 0, 0, 0, $4, $4, $5
                     )
                     RETURNING ${ROOM_COLUMNS}
                 `,
@@ -438,6 +458,53 @@ export async function setParticipantScreenShare(
     });
 }
 
+export async function setParticipantChatActive(
+    roomCode: string,
+    participantId: string,
+    active: boolean
+): Promise<RoomSummary | null> {
+    const normalizedCode = roomCode.toUpperCase();
+    const normalizedActive = Boolean(active);
+
+    return withTransaction(async (client) => {
+        const room = await fetchRoom(client, normalizedCode, true);
+        if (!room) return null;
+
+        let updateQuery = "";
+        if (room.host_participant_id === participantId) {
+            updateQuery = `
+                UPDATE rooms
+                SET
+                    host_chat_active = $2,
+                    updated_at = NOW(),
+                    expires_at = $3
+                WHERE room_code = $1
+                RETURNING ${ROOM_COLUMNS}
+            `;
+        } else if (room.guest_participant_id === participantId) {
+            updateQuery = `
+                UPDATE rooms
+                SET
+                    guest_chat_active = $2,
+                    updated_at = NOW(),
+                    expires_at = $3
+                WHERE room_code = $1
+                RETURNING ${ROOM_COLUMNS}
+            `;
+        } else {
+            return null;
+        }
+
+        const result = await client.query<StoredRoomRow>(updateQuery, [
+            normalizedCode,
+            normalizedActive,
+            getExpiryDate(),
+        ]);
+
+        return buildSummary(result.rows[0], participantId);
+    });
+}
+
 export async function removeParticipantFromRoom(
     roomCode: string,
     participantId: string
@@ -462,6 +529,8 @@ export async function removeParticipantFromRoom(
                         guest_name = NULL,
                         host_screen_share_active = FALSE,
                         guest_screen_share_active = FALSE,
+                        host_chat_active = FALSE,
+                        guest_chat_active = FALSE,
                         guest_ready = FALSE,
                         guest_file_count = 0,
                         guest_total_bytes = 0,
@@ -492,12 +561,14 @@ export async function removeParticipantFromRoom(
                         host_participant_id = guest_participant_id,
                         host_name = COALESCE(guest_name, host_name),
                         host_screen_share_active = FALSE,
+                        host_chat_active = FALSE,
                         host_ready = guest_ready,
                         host_file_count = guest_file_count,
                         host_total_bytes = guest_total_bytes,
                         guest_participant_id = NULL,
                         guest_name = NULL,
                         guest_screen_share_active = FALSE,
+                        guest_chat_active = FALSE,
                         guest_ready = FALSE,
                         guest_file_count = 0,
                         guest_total_bytes = 0,
