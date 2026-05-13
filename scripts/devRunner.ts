@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { waitForDatabase } from "./dbTools";
 
 const DEFAULT_SERVER_ARGS = [
     "--allow-local-port=5173",
@@ -154,6 +155,10 @@ async function runCommand(label: string, cmd: string[]): Promise<void> {
 async function runFullBootstrap(): Promise<void> {
     await runCommand("Ensuring local Postgres is running...", ["bun", "run", "db:up"]);
     dockerStarted = true;
+
+    log("Waiting for Postgres to be ready...");
+    await waitForDatabase();
+
     await runCommand("Resetting local database schema...", [
         "bun",
         "run",

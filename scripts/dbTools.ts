@@ -71,7 +71,7 @@ export async function readMigrationFile(fileName: string): Promise<string> {
     return fs.readFile(migrationPath, "utf8");
 }
 
-export function assertLocalDatabaseUrl(): void {
+export async function assertLocalDatabaseUrl(): void {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
         throw new Error("DATABASE_URL is required.");
@@ -84,5 +84,27 @@ export function assertLocalDatabaseUrl(): void {
         throw new Error(
             "Refusing to reset a non-local database. Set ALLOW_REMOTE_DB_RESET=true to override."
         );
+    }
+}
+
+export async function waitForDatabase(maxAttempts = 30, intervalMs = 1000): Promise<void> {
+    const config = getDatabaseConfig();
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+        const client = new Client(config);
+        try {
+            await client.connect();
+            await client.query("SELECT 1");
+            await client.end();
+            return;
+        } catch (error) {
+            attempts++;
+            await client.end().catch(() => {});
+            if (attempts >= maxAttempts) {
+                throw new Error(`Database not ready after ${maxAttempts} attempts: ${(error as Error).message}`);
+            }
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
     }
 }
