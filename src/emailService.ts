@@ -1,33 +1,20 @@
-// --- src/emailService.ts ---
-
 import axios from "axios";
-import type { ServerResponse, IncomingMessage } from "http";
 import config from "./config";
 import { emit } from "./gossamer";
 
 interface EmailRequestBody {
-    token?: string;
+    token: string;
 }
 
-interface IncomingMessageWithBody extends IncomingMessage {
-    body?: EmailRequestBody;
-}
-
-function sendJson(res: ServerResponse, statusCode: number, obj: Record<string, unknown>): void {
-    res.writeHead(statusCode, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(obj));
-}
-
-export async function handleRequestEmail(
-    req: IncomingMessageWithBody,
-    res: ServerResponse
-): Promise<void> {
+export async function getRequestEmailResponse(
+    body: EmailRequestBody
+): Promise<Response> {
     try {
-        const { token } = req.body || {};
-
-        if (!token) {
-            sendJson(res, 400, { error: "reCAPTCHA token is required" });
-            return;
+        if (!body.token) {
+            return Response.json(
+                { error: "reCAPTCHA token is required" },
+                { status: 400 }
+            );
         }
 
         emit("email:request", { status: "validating" });
@@ -38,7 +25,7 @@ export async function handleRequestEmail(
             {
                 params: {
                     secret: config.recaptchaSecretKey,
-                    response: token,
+                    response: body.token,
                 },
             }
         );
@@ -48,14 +35,16 @@ export async function handleRequestEmail(
         if (success) {
             if (!config.contactEmail) {
                 emit("email:error", { error: "server_not_configured" });
-                sendJson(res, 500, { error: "server_not_configured" });
-                return;
+                return Response.json(
+                    { error: "server_not_configured" },
+                    { status: 500 }
+                );
             }
-            sendJson(res, 200, { email: config.contactEmail });
-            return;
+
+            return Response.json({ email: config.contactEmail }, { status: 200 });
         }
 
-        sendJson(res, 400, { error: "recaptcha_failed" });
+        return Response.json({ error: "recaptcha_failed" }, { status: 400 });
     } catch (error) {
         const err = error as Error & { response?: { data?: unknown } };
         emit("email:error", {
@@ -63,6 +52,6 @@ export async function handleRequestEmail(
             error: err.message,
             axiosResponse: err.response?.data,
         });
-        sendJson(res, 500, { error: "internal_error" });
+        return Response.json({ error: "internal_error" }, { status: 500 });
     }
 }

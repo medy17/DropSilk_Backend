@@ -8,15 +8,25 @@ jest.mock("../src/gossamer", () => ({
 }));
 
 jest.mock("../src/config", () => ({
-    PORT: 0,
-    NODE_ENV: "test",
-    ALLOWED_ORIGINS: new Set(["http://localhost"]),
-    VERCEL_PREVIEW_ORIGIN_REGEX: /^https:\/\/.*\.vercel\.app$/,
-    CLOUDFLARE_TURN_TOKEN_ID: "fake-id",
-    CLOUDFLARE_API_TOKEN: "fake-token",
+    __esModule: true,
+    default: {
+        PORT: 0,
+        NODE_ENV: "test",
+        ALLOWED_ORIGINS: new Set(["http://localhost"]),
+        VERCEL_PREVIEW_ORIGIN_REGEX: /^https:\/\/.*\.vercel\.app$/,
+        CLOUDFLARE_TURN_TOKEN_ID: "fake-id",
+        CLOUDFLARE_API_TOKEN: "fake-token",
+    },
 }));
 
 jest.mock("../src/uploadthingHandler", () => ({
+    handleUploadThingWebRequest: () =>
+        Promise.resolve(
+            new Response(JSON.stringify({ success: true }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        ),
     handleUploadThingRequest: (req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true }));

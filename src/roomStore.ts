@@ -1,37 +1,19 @@
-import type { QueryResult, QueryResultRow } from "pg";
-import { query, withTransaction } from "./dbClient";
+import {
+    Kysely,
+    Selectable,
+    Transaction,
+    sql,
+} from "kysely";
+import { Database, RoomsTable, getDb, withTransaction } from "./dbClient";
 import config from "./config";
+import { generateParticipantId, generateRoomCode } from "./ids";
+import { nameSchema } from "./validation";
 
 export type RoomParticipantRole = "host" | "guest";
 export type RoomStatus = "waiting" | "paired" | "ready";
 
-interface StoredRoomRow {
-    room_code: string;
-    host_participant_id: string;
-    host_name: string;
-    guest_participant_id: string | null;
-    guest_name: string | null;
-    host_screen_share_active: boolean;
-    guest_screen_share_active: boolean;
-    host_chat_active: boolean;
-    guest_chat_active: boolean;
-    host_ready: boolean;
-    guest_ready: boolean;
-    host_file_count: number;
-    guest_file_count: number;
-    host_total_bytes: number | string;
-    guest_total_bytes: number | string;
-    created_at: Date | string;
-    updated_at: Date | string;
-    expires_at: Date | string;
-}
-
-interface Queryable {
-    query<T extends QueryResultRow = StoredRoomRow>(
-        text: string,
-        params?: unknown[]
-    ): Promise<QueryResult<T>>;
-}
+type RoomRecord = Selectable<RoomsTable>;
+type DatabaseExecutor = Kysely<Database> | Transaction<Database>;
 
 export interface RoomParticipantSummary {
     participantId: string;
@@ -66,45 +48,12 @@ export interface RoomSummary {
     chat: RoomChatSummary;
 }
 
-const ROOM_COLUMNS = `
-    room_code,
-    host_participant_id,
-    host_name,
-    guest_participant_id,
-    guest_name,
-    host_screen_share_active,
-    guest_screen_share_active,
-    host_chat_active,
-    guest_chat_active,
-    host_ready,
-    guest_ready,
-    host_file_count,
-    guest_file_count,
-    host_total_bytes,
-    guest_total_bytes,
-    created_at,
-    updated_at,
-    expires_at
-`;
-
 function getExpiryDate(now: number = Date.now()): Date {
     return new Date(now + config.ROOM_TTL_MS);
 }
 
-function randomId(length: number): string {
-    return Math.random().toString(36).slice(2, 2 + length);
-}
-
-function generateRoomCode(): string {
-    return Math.random().toString(36).slice(2, 8).toUpperCase();
-}
-
 function normalizeName(name: string): string {
-    const trimmed = String(name || "").trim();
-    if (!trimmed) {
-        throw new Error("Name is required");
-    }
-    return trimmed.slice(0, 50);
+    return nameSchema.parse(name);
 }
 
 function toIso(value: Date | string): string {
@@ -116,7 +65,7 @@ function toNumber(value: number | string | null | undefined): number {
 }
 
 function resolveParticipantRole(
-    room: StoredRoomRow,
+    room: RoomRecord,
     participantId: string
 ): RoomParticipantRole | null {
     if (room.host_participant_id === participantId) return "host";
@@ -125,7 +74,7 @@ function resolveParticipantRole(
 }
 
 function buildParticipantSummary(
-    room: StoredRoomRow,
+    room: RoomRecord,
     role: RoomParticipantRole
 ): RoomParticipantSummary {
     if (role === "host") {
@@ -149,7 +98,7 @@ function buildParticipantSummary(
     };
 }
 
-function buildSummary(room: StoredRoomRow, participantId: string): RoomSummary | null {
+function buildSummary(room: RoomRecord, participantId: string): RoomSummary | null {
     const role = resolveParticipantRole(room, participantId);
     if (!role) return null;
 
@@ -202,46 +151,47 @@ function buildSummary(room: StoredRoomRow, participantId: string): RoomSummary |
 }
 
 async function fetchRoom(
-    db: Queryable,
+    database: DatabaseExecutor,
     roomCode: string,
     lockForUpdate: boolean = false
-): Promise<StoredRoomRow | null> {
-    const lockClause = lockForUpdate ? " FOR UPDATE" : "";
-    const result = await db.query<StoredRoomRow>(
-        `
-            SELECT ${ROOM_COLUMNS}
-            FROM rooms
-            WHERE room_code = $1 AND expires_at > NOW()
-            ${lockClause}
-        `,
-        [roomCode]
-    );
-    return result.rows[0] || null;
+): Promise<RoomRecord | null> {
+    let query = database
+        .selectFrom("rooms")
+        .selectAll()
+        .where("room_code", "=", roomCode)
+        .where("expires_at", ">", sql<Date>`now()`);
+
+    if (lockForUpdate) {
+        query = query.forUpdate();
+    }
+
+    return (await query.executeTakeFirst()) ?? null;
 }
 
 async function extendRoom(
-    db: Queryable,
+    database: DatabaseExecutor,
     roomCode: string,
     participantId?: string
-): Promise<StoredRoomRow | null> {
-    const participantClause = participantId
-        ? "AND (host_participant_id = $3 OR guest_participant_id = $3)"
-        : "";
-    const params = participantId
-        ? [roomCode, getExpiryDate(), participantId]
-        : [roomCode, getExpiryDate()];
-    const result = await db.query<StoredRoomRow>(
-        `
-            UPDATE rooms
-            SET updated_at = NOW(), expires_at = $2
-            WHERE room_code = $1
-              AND expires_at > NOW()
-              ${participantClause}
-            RETURNING ${ROOM_COLUMNS}
-        `,
-        params
-    );
-    return result.rows[0] || null;
+): Promise<RoomRecord | null> {
+    let query = database
+        .updateTable("rooms")
+        .set({
+            updated_at: sql<Date>`now()`,
+            expires_at: getExpiryDate(),
+        })
+        .where("room_code", "=", roomCode)
+        .where("expires_at", ">", sql<Date>`now()`);
+
+    if (participantId) {
+        query = query.where((eb) =>
+            eb.or([
+                eb("host_participant_id", "=", participantId),
+                eb("guest_participant_id", "=", participantId),
+            ])
+        );
+    }
+
+    return (await query.returningAll().executeTakeFirst()) ?? null;
 }
 
 export async function createRoom(hostName: string): Promise<RoomSummary> {
@@ -249,42 +199,37 @@ export async function createRoom(hostName: string): Promise<RoomSummary> {
 
     for (let attempt = 0; attempt < 10; attempt++) {
         const roomCode = generateRoomCode();
-        const hostParticipantId = randomId(12);
+        const hostParticipantId = generateParticipantId();
         const now = new Date();
         const expiresAt = getExpiryDate(now.getTime());
 
         try {
-            const result = await query<StoredRoomRow>(
-                `
-                    INSERT INTO rooms (
-                        room_code,
-                        host_participant_id,
-                        host_name,
-                        guest_participant_id,
-                        guest_name,
-                        host_screen_share_active,
-                        guest_screen_share_active,
-                        host_chat_active,
-                        guest_chat_active,
-                        host_ready,
-                        guest_ready,
-                        host_file_count,
-                        guest_file_count,
-                        host_total_bytes,
-                        guest_total_bytes,
-                        created_at,
-                        updated_at,
-                        expires_at
-                    )
-                    VALUES (
-                        $1, $2, $3, NULL, NULL, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 0, 0, 0, 0, $4, $4, $5
-                    )
-                    RETURNING ${ROOM_COLUMNS}
-                `,
-                [roomCode, hostParticipantId, normalizedHostName, now, expiresAt]
-            );
+            const room = await getDb()
+                .insertInto("rooms")
+                .values({
+                    room_code: roomCode,
+                    host_participant_id: hostParticipantId,
+                    host_name: normalizedHostName,
+                    guest_participant_id: null,
+                    guest_name: null,
+                    host_screen_share_active: false,
+                    guest_screen_share_active: false,
+                    host_chat_active: false,
+                    guest_chat_active: false,
+                    host_ready: false,
+                    guest_ready: false,
+                    host_file_count: 0,
+                    guest_file_count: 0,
+                    host_total_bytes: 0,
+                    guest_total_bytes: 0,
+                    created_at: now,
+                    updated_at: now,
+                    expires_at: expiresAt,
+                })
+                .returningAll()
+                .executeTakeFirstOrThrow();
 
-            const summary = buildSummary(result.rows[0], hostParticipantId);
+            const summary = buildSummary(room, hostParticipantId);
             if (!summary) {
                 throw new Error("Failed to create room");
             }
@@ -305,8 +250,8 @@ export async function joinRoom(roomCode: string, guestName: string): Promise<Roo
     const normalizedCode = roomCode.toUpperCase();
     const normalizedGuestName = normalizeName(guestName);
 
-    return withTransaction(async (client) => {
-        const room = await fetchRoom(client, normalizedCode, true);
+    return withTransaction(async (trx) => {
+        const room = await fetchRoom(trx, normalizedCode, true);
 
         if (!room) {
             throw new Error("Room not found or expired");
@@ -315,22 +260,20 @@ export async function joinRoom(roomCode: string, guestName: string): Promise<Roo
             throw new Error("Room already has two participants");
         }
 
-        const guestParticipantId = randomId(12);
-        const result = await client.query<StoredRoomRow>(
-            `
-                UPDATE rooms
-                SET
-                    guest_participant_id = $2,
-                    guest_name = $3,
-                    updated_at = NOW(),
-                    expires_at = $4
-                WHERE room_code = $1
-                RETURNING ${ROOM_COLUMNS}
-            `,
-            [normalizedCode, guestParticipantId, normalizedGuestName, getExpiryDate()]
-        );
+        const guestParticipantId = generateParticipantId();
+        const updatedRoom = await trx
+            .updateTable("rooms")
+            .set({
+                guest_participant_id: guestParticipantId,
+                guest_name: normalizedGuestName,
+                updated_at: sql<Date>`now()`,
+                expires_at: getExpiryDate(),
+            })
+            .where("room_code", "=", normalizedCode)
+            .returningAll()
+            .executeTakeFirstOrThrow();
 
-        const summary = buildSummary(result.rows[0], guestParticipantId);
+        const summary = buildSummary(updatedRoom, guestParticipantId);
         if (!summary) {
             throw new Error("Failed to join room");
         }
@@ -343,7 +286,7 @@ export async function getRoomSummary(
     participantId: string
 ): Promise<RoomSummary | null> {
     const normalizedCode = roomCode.toUpperCase();
-    const extendedRoom = await extendRoom({ query }, normalizedCode, participantId);
+    const extendedRoom = await extendRoom(getDb(), normalizedCode, participantId);
     return extendedRoom ? buildSummary(extendedRoom, participantId) : null;
 }
 
@@ -361,47 +304,45 @@ export async function markParticipantReady(
 ): Promise<RoomSummary | null> {
     const normalizedCode = roomCode.toUpperCase();
 
-    return withTransaction(async (client) => {
-        const room = await fetchRoom(client, normalizedCode, true);
+    return withTransaction(async (trx) => {
+        const room = await fetchRoom(trx, normalizedCode, true);
         if (!room) return null;
 
-        let updateQuery = "";
+        const baseUpdate = {
+            updated_at: sql<Date>`now()`,
+            expires_at: getExpiryDate(),
+        };
+
+        let updatedRoom: RoomRecord | undefined;
         if (room.host_participant_id === participantId) {
-            updateQuery = `
-                UPDATE rooms
-                SET
-                    host_ready = TRUE,
-                    host_file_count = $2,
-                    host_total_bytes = $3,
-                    updated_at = NOW(),
-                    expires_at = $4
-                WHERE room_code = $1
-                RETURNING ${ROOM_COLUMNS}
-            `;
+            updatedRoom = await trx
+                .updateTable("rooms")
+                .set({
+                    ...baseUpdate,
+                    host_ready: true,
+                    host_file_count: toNumber(payload.fileCount),
+                    host_total_bytes: toNumber(payload.totalBytes),
+                })
+                .where("room_code", "=", normalizedCode)
+                .returningAll()
+                .executeTakeFirst();
         } else if (room.guest_participant_id === participantId) {
-            updateQuery = `
-                UPDATE rooms
-                SET
-                    guest_ready = TRUE,
-                    guest_file_count = $2,
-                    guest_total_bytes = $3,
-                    updated_at = NOW(),
-                    expires_at = $4
-                WHERE room_code = $1
-                RETURNING ${ROOM_COLUMNS}
-            `;
+            updatedRoom = await trx
+                .updateTable("rooms")
+                .set({
+                    ...baseUpdate,
+                    guest_ready: true,
+                    guest_file_count: toNumber(payload.fileCount),
+                    guest_total_bytes: toNumber(payload.totalBytes),
+                })
+                .where("room_code", "=", normalizedCode)
+                .returningAll()
+                .executeTakeFirst();
         } else {
             return null;
         }
 
-        const result = await client.query<StoredRoomRow>(updateQuery, [
-            normalizedCode,
-            toNumber(payload.fileCount),
-            toNumber(payload.totalBytes),
-            getExpiryDate(),
-        ]);
-
-        return buildSummary(result.rows[0], participantId);
+        return updatedRoom ? buildSummary(updatedRoom, participantId) : null;
     });
 }
 
@@ -413,48 +354,47 @@ export async function setParticipantScreenShare(
     const normalizedCode = roomCode.toUpperCase();
     const normalizedActive = Boolean(active);
 
-    return withTransaction(async (client) => {
-        const room = await fetchRoom(client, normalizedCode, true);
+    return withTransaction(async (trx) => {
+        const room = await fetchRoom(trx, normalizedCode, true);
         if (!room) return null;
 
-        let updateQuery = "";
+        const baseUpdate = {
+            updated_at: sql<Date>`now()`,
+            expires_at: getExpiryDate(),
+        };
+
+        let updatedRoom: RoomRecord | undefined;
         if (room.host_participant_id === participantId) {
             if (normalizedActive && room.guest_screen_share_active) {
                 throw new Error("Peer is already screen sharing");
             }
-            updateQuery = `
-                UPDATE rooms
-                SET
-                    host_screen_share_active = $2,
-                    updated_at = NOW(),
-                    expires_at = $3
-                WHERE room_code = $1
-                RETURNING ${ROOM_COLUMNS}
-            `;
+            updatedRoom = await trx
+                .updateTable("rooms")
+                .set({
+                    ...baseUpdate,
+                    host_screen_share_active: normalizedActive,
+                })
+                .where("room_code", "=", normalizedCode)
+                .returningAll()
+                .executeTakeFirst();
         } else if (room.guest_participant_id === participantId) {
             if (normalizedActive && room.host_screen_share_active) {
                 throw new Error("Peer is already screen sharing");
             }
-            updateQuery = `
-                UPDATE rooms
-                SET
-                    guest_screen_share_active = $2,
-                    updated_at = NOW(),
-                    expires_at = $3
-                WHERE room_code = $1
-                RETURNING ${ROOM_COLUMNS}
-            `;
+            updatedRoom = await trx
+                .updateTable("rooms")
+                .set({
+                    ...baseUpdate,
+                    guest_screen_share_active: normalizedActive,
+                })
+                .where("room_code", "=", normalizedCode)
+                .returningAll()
+                .executeTakeFirst();
         } else {
             return null;
         }
 
-        const result = await client.query<StoredRoomRow>(updateQuery, [
-            normalizedCode,
-            normalizedActive,
-            getExpiryDate(),
-        ]);
-
-        return buildSummary(result.rows[0], participantId);
+        return updatedRoom ? buildSummary(updatedRoom, participantId) : null;
     });
 }
 
@@ -466,42 +406,41 @@ export async function setParticipantChatActive(
     const normalizedCode = roomCode.toUpperCase();
     const normalizedActive = Boolean(active);
 
-    return withTransaction(async (client) => {
-        const room = await fetchRoom(client, normalizedCode, true);
+    return withTransaction(async (trx) => {
+        const room = await fetchRoom(trx, normalizedCode, true);
         if (!room) return null;
 
-        let updateQuery = "";
+        const baseUpdate = {
+            updated_at: sql<Date>`now()`,
+            expires_at: getExpiryDate(),
+        };
+
+        let updatedRoom: RoomRecord | undefined;
         if (room.host_participant_id === participantId) {
-            updateQuery = `
-                UPDATE rooms
-                SET
-                    host_chat_active = $2,
-                    updated_at = NOW(),
-                    expires_at = $3
-                WHERE room_code = $1
-                RETURNING ${ROOM_COLUMNS}
-            `;
+            updatedRoom = await trx
+                .updateTable("rooms")
+                .set({
+                    ...baseUpdate,
+                    host_chat_active: normalizedActive,
+                })
+                .where("room_code", "=", normalizedCode)
+                .returningAll()
+                .executeTakeFirst();
         } else if (room.guest_participant_id === participantId) {
-            updateQuery = `
-                UPDATE rooms
-                SET
-                    guest_chat_active = $2,
-                    updated_at = NOW(),
-                    expires_at = $3
-                WHERE room_code = $1
-                RETURNING ${ROOM_COLUMNS}
-            `;
+            updatedRoom = await trx
+                .updateTable("rooms")
+                .set({
+                    ...baseUpdate,
+                    guest_chat_active: normalizedActive,
+                })
+                .where("room_code", "=", normalizedCode)
+                .returningAll()
+                .executeTakeFirst();
         } else {
             return null;
         }
 
-        const result = await client.query<StoredRoomRow>(updateQuery, [
-            normalizedCode,
-            normalizedActive,
-            getExpiryDate(),
-        ]);
-
-        return buildSummary(result.rows[0], participantId);
+        return updatedRoom ? buildSummary(updatedRoom, participantId) : null;
     });
 }
 
@@ -514,75 +453,74 @@ export async function removeParticipantFromRoom(
 }> {
     const normalizedCode = roomCode.toUpperCase();
 
-    return withTransaction(async (client) => {
-        const room = await fetchRoom(client, normalizedCode, true);
+    return withTransaction(async (trx) => {
+        const room = await fetchRoom(trx, normalizedCode, true);
         if (!room) {
             return { removed: false, remainingParticipantId: null };
         }
 
         if (room.guest_participant_id === participantId) {
-            const result = await client.query<StoredRoomRow>(
-                `
-                    UPDATE rooms
-                    SET
-                        guest_participant_id = NULL,
-                        guest_name = NULL,
-                        host_screen_share_active = FALSE,
-                        guest_screen_share_active = FALSE,
-                        host_chat_active = FALSE,
-                        guest_chat_active = FALSE,
-                        guest_ready = FALSE,
-                        guest_file_count = 0,
-                        guest_total_bytes = 0,
-                        updated_at = NOW(),
-                        expires_at = $2
-                    WHERE room_code = $1
-                    RETURNING ${ROOM_COLUMNS}
-                `,
-                [normalizedCode, getExpiryDate()]
-            );
+            const updatedRoom = await trx
+                .updateTable("rooms")
+                .set({
+                    guest_participant_id: null,
+                    guest_name: null,
+                    host_screen_share_active: false,
+                    guest_screen_share_active: false,
+                    host_chat_active: false,
+                    guest_chat_active: false,
+                    guest_ready: false,
+                    guest_file_count: 0,
+                    guest_total_bytes: 0,
+                    updated_at: sql<Date>`now()`,
+                    expires_at: getExpiryDate(),
+                })
+                .where("room_code", "=", normalizedCode)
+                .returningAll()
+                .executeTakeFirstOrThrow();
 
             return {
                 removed: true,
-                remainingParticipantId: result.rows[0].host_participant_id,
+                remainingParticipantId: updatedRoom.host_participant_id,
             };
         }
 
         if (room.host_participant_id === participantId) {
             if (!room.guest_participant_id) {
-                await client.query("DELETE FROM rooms WHERE room_code = $1", [normalizedCode]);
+                await trx
+                    .deleteFrom("rooms")
+                    .where("room_code", "=", normalizedCode)
+                    .execute();
                 return { removed: true, remainingParticipantId: null };
             }
 
-            const result = await client.query<StoredRoomRow>(
-                `
-                    UPDATE rooms
-                    SET
-                        host_participant_id = guest_participant_id,
-                        host_name = COALESCE(guest_name, host_name),
-                        host_screen_share_active = FALSE,
-                        host_chat_active = FALSE,
-                        host_ready = guest_ready,
-                        host_file_count = guest_file_count,
-                        host_total_bytes = guest_total_bytes,
-                        guest_participant_id = NULL,
-                        guest_name = NULL,
-                        guest_screen_share_active = FALSE,
-                        guest_chat_active = FALSE,
-                        guest_ready = FALSE,
-                        guest_file_count = 0,
-                        guest_total_bytes = 0,
-                        updated_at = NOW(),
-                        expires_at = $2
-                    WHERE room_code = $1
-                    RETURNING ${ROOM_COLUMNS}
-                `,
-                [normalizedCode, getExpiryDate()]
-            );
+            const updatedRoom = await trx
+                .updateTable("rooms")
+                .set((eb) => ({
+                    host_participant_id: sql<string>`${eb.ref("guest_participant_id")}`,
+                    host_name: sql<string>`coalesce(${eb.ref("guest_name")}, ${eb.ref("host_name")})`,
+                    host_screen_share_active: false,
+                    host_chat_active: false,
+                    host_ready: sql<boolean>`${eb.ref("guest_ready")}`,
+                    host_file_count: sql<number>`${eb.ref("guest_file_count")}`,
+                    host_total_bytes: sql<number>`${eb.ref("guest_total_bytes")}`,
+                    guest_participant_id: null,
+                    guest_name: null,
+                    guest_screen_share_active: false,
+                    guest_chat_active: false,
+                    guest_ready: false,
+                    guest_file_count: 0,
+                    guest_total_bytes: 0,
+                    updated_at: sql<Date>`now()`,
+                    expires_at: getExpiryDate(),
+                }))
+                .where("room_code", "=", normalizedCode)
+                .returningAll()
+                .executeTakeFirstOrThrow();
 
             return {
                 removed: true,
-                remainingParticipantId: result.rows[0].host_participant_id,
+                remainingParticipantId: updatedRoom.host_participant_id,
             };
         }
 
@@ -608,6 +546,10 @@ export async function resolveRoomParticipant(
 }
 
 export async function deleteExpiredRooms(): Promise<number> {
-    const result = await query("DELETE FROM rooms WHERE expires_at <= NOW()");
-    return result.rowCount || 0;
+    const result = await getDb()
+        .deleteFrom("rooms")
+        .where("expires_at", "<=", sql<Date>`now()`)
+        .executeTakeFirst();
+
+    return Number(result.numDeletedRows || 0);
 }

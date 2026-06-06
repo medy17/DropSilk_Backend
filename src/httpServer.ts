@@ -1,8 +1,10 @@
-// --- src/httpServer.ts ---
-
-import http, { IncomingMessage, ServerResponse } from "http";
-import fs from "fs";
+import http from "http";
+import fs from "fs/promises";
 import path from "path";
+
+import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
+import { Hono, type Context } from "hono";
+import { cors } from "hono/cors";
 
 import config from "./config";
 import * as state from "./state";
@@ -14,86 +16,47 @@ import {
     setParticipantChatActive,
     setParticipantScreenShare,
 } from "./roomStore";
-import { matchRoute } from "./routeMatcher";
-import { getClientIp, getLocalIpForDisplay } from "./utils";
-import { handleUploadThingRequest } from "./uploadthingHandler";
-import { handleRequestEmail } from "./emailService";
+import { getLocalIpForDisplay, isAllowedOrigin, getClientIp } from "./networking";
+import { handleUploadThingWebRequest } from "./uploadthingHandler";
+import { getRequestEmailResponse } from "./emailService";
 import { emit } from "./gossamer";
+import {
+    createRoomBodySchema,
+    joinRoomBodySchema,
+    participantReadyBodySchema,
+    participantToggleBodySchema,
+    requestEmailBodySchema,
+    roomCodeParamSchema,
+    roomParticipantParamSchema,
+    roomSummaryQuerySchema,
+    zValidator,
+} from "./validation";
 
 const PORT_TO_USE = Number(process.env.PORT) || config.PORT;
 
-interface IncomingMessageWithBody extends IncomingMessage {
-    body?: Record<string, unknown>;
+function roomNotFound(c: Context): Response {
+    return c.json(
+        { error: "Room not found or participant is not part of it." },
+        404
+    );
 }
 
-function setRoomCors(res: ServerResponse, req: IncomingMessage): void {
-    const origin = req.headers.origin;
-    if (
-        origin &&
-        (config.ALLOWED_ORIGINS.has(origin) ||
-            config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin))
-    ) {
-        res.setHeader("Access-Control-Allow-Origin", origin);
-        res.setHeader("Vary", "Origin");
-    }
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+function roomRequestError(c: Context, error: unknown): Response {
+    const err = error as Error;
+    emit("room:error", {
+        error: err.message,
+        method: c.req.method,
+        path: c.req.path,
+    });
+    return c.json({ error: err.message || "Invalid room request." }, 400);
 }
 
-function sendJson(
-    res: ServerResponse,
-    statusCode: number,
-    payload: Record<string, unknown>
-): void {
-    res.writeHead(statusCode, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(payload));
+function allowConfiguredOrigin(origin: string): string | null {
+    return origin && isAllowedOrigin(origin) ? origin : null;
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-    const chunks: Buffer[] = [];
-
-    for await (const chunk of req) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-
-    if (chunks.length === 0) {
-        return {};
-    }
-
-    const raw = Buffer.concat(chunks).toString("utf8").trim();
-    if (!raw) {
-        return {};
-    }
-
-    return JSON.parse(raw) as Record<string, unknown>;
-}
-
-function setTurnCors(res: ServerResponse, req: IncomingMessage): void {
-    const origin = req.headers.origin;
-    if (
-        origin &&
-        (config.ALLOWED_ORIGINS.has(origin) ||
-            config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin))
-    ) {
-        res.setHeader("Access-Control-Allow-Origin", origin);
-        res.setHeader("Vary", "Origin");
-    }
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-function setEmailCors(res: ServerResponse, req: IncomingMessage): void {
-    const origin = req.headers.origin;
-    if (
-        origin &&
-        (config.ALLOWED_ORIGINS.has(origin) ||
-            config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin))
-    ) {
-        res.setHeader("Access-Control-Allow-Origin", origin);
-        res.setHeader("Vary", "Origin");
-    }
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+function allowAnyOrigin(origin: string): string | null {
+    return origin || null;
 }
 
 function formatUptime(seconds: number): string {
@@ -109,406 +72,287 @@ function formatUptime(seconds: number): string {
     return parts.join(" ");
 }
 
-export const server = http.createServer(
-    async (req: IncomingMessage, res: ServerResponse) => {
+const roomCors = cors({
+    allowHeaders: ["Content-Type"],
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    origin: allowConfiguredOrigin,
+});
+
+const turnCors = cors({
+    allowHeaders: ["Content-Type"],
+    allowMethods: ["GET", "OPTIONS"],
+    origin: allowConfiguredOrigin,
+});
+
+const emailCors = cors({
+    allowHeaders: ["Content-Type"],
+    allowMethods: ["POST", "OPTIONS"],
+    origin: allowConfiguredOrigin,
+});
+
+const uploadCors = cors({
+    allowHeaders: ["*"],
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    maxAge: 86400,
+    origin: allowAnyOrigin,
+});
+
+type AppBindings = { Bindings: HttpBindings };
+
+export const app = new Hono<AppBindings>();
+const rooms = new Hono<AppBindings>();
+
+app.onError((error, c) => {
+    emit("http:error", {
+        context: "Global Request Handler",
+        error: error.message,
+        url: c.req.url,
+    });
+    return c.text("Internal Server Error", 500);
+});
+
+app.notFound((c) => c.text("Not Found", 404));
+
+rooms.use("*", roomCors);
+rooms.post("/", zValidator("json", createRoomBodySchema), async (c) => {
+    try {
+        const body = c.req.valid("json");
+        return c.json(await createRoom(body.name), 201);
+    } catch (error) {
+        return roomRequestError(c, error);
+    }
+});
+rooms.get(
+    "/:roomCode",
+    zValidator("param", roomCodeParamSchema),
+    zValidator("query", roomSummaryQuerySchema),
+    async (c) => {
+        const params = c.req.valid("param");
+        const query = c.req.valid("query");
+        const summary = await getRoomSummary(params.roomCode, query.participantId);
+        return summary ? c.json(summary) : roomNotFound(c);
+    }
+);
+rooms.post(
+    "/:roomCode/join",
+    zValidator("param", roomCodeParamSchema),
+    zValidator("json", joinRoomBodySchema),
+    async (c) => {
         try {
-            const url = new URL(req.url || "/", `http://${req.headers.host}`);
-            const clientIp = getClientIp(req);
-
-            if (url.pathname === "/api/rooms" || url.pathname.startsWith("/api/rooms/")) {
-                setRoomCors(res, req);
-
-                if (req.method === "OPTIONS") {
-                    res.writeHead(204);
-                    res.end();
-                    return;
-                }
-
-                try {
-                    const createRoomRoute = matchRoute(
-                        req.method,
-                        url.pathname,
-                        "POST",
-                        "/api/rooms"
-                    );
-                    if (createRoomRoute) {
-                        const body = await readJsonBody(req);
-                        const summary = await createRoom(String(body.name || ""));
-                        sendJson(res, 201, summary as unknown as Record<string, unknown>);
-                        return;
-                    }
-
-                    const getRoomRoute = matchRoute(
-                        req.method,
-                        url.pathname,
-                        "GET",
-                        "/api/rooms/:roomCode"
-                    );
-                    if (getRoomRoute) {
-                        const participantId = url.searchParams.get("participantId") || "";
-                        const summary = await getRoomSummary(
-                            getRoomRoute.roomCode.toUpperCase(),
-                            participantId
-                        );
-
-                        if (!summary) {
-                            sendJson(res, 404, {
-                                error: "Room not found or participant is not part of it.",
-                            });
-                            return;
-                        }
-
-                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
-                        return;
-                    }
-
-                    const joinRoomRoute = matchRoute(
-                        req.method,
-                        url.pathname,
-                        "POST",
-                        "/api/rooms/:roomCode/join"
-                    );
-                    if (joinRoomRoute) {
-                        const body = await readJsonBody(req);
-                        const summary = await joinRoom(
-                            joinRoomRoute.roomCode.toUpperCase(),
-                            String(body.name || "")
-                        );
-                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
-                        return;
-                    }
-
-                    const readyRoute = matchRoute(
-                        req.method,
-                        url.pathname,
-                        "POST",
-                        "/api/rooms/:roomCode/participants/:participantId/ready"
-                    );
-                    if (readyRoute) {
-                        const body = await readJsonBody(req);
-                        const summary = await markParticipantReady(
-                            readyRoute.roomCode.toUpperCase(),
-                            readyRoute.participantId,
-                            {
-                                fileCount: Number(body.fileCount) || 0,
-                                totalBytes: Number(body.totalBytes) || 0,
-                            }
-                        );
-
-                        if (!summary) {
-                            sendJson(res, 404, {
-                                error: "Room not found or participant is not part of it.",
-                            });
-                            return;
-                        }
-
-                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
-                        return;
-                    }
-
-                    const screenShareRoute = matchRoute(
-                        req.method,
-                        url.pathname,
-                        "POST",
-                        "/api/rooms/:roomCode/participants/:participantId/screen-share"
-                    );
-                    if (screenShareRoute) {
-                        const body = await readJsonBody(req);
-                        const summary = await setParticipantScreenShare(
-                            screenShareRoute.roomCode.toUpperCase(),
-                            screenShareRoute.participantId,
-                            Boolean(body.active)
-                        );
-
-                        if (!summary) {
-                            sendJson(res, 404, {
-                                error: "Room not found or participant is not part of it.",
-                            });
-                            return;
-                        }
-
-                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
-                        return;
-                    }
-
-                    const chatRoute = matchRoute(
-                        req.method,
-                        url.pathname,
-                        "POST",
-                        "/api/rooms/:roomCode/participants/:participantId/chat"
-                    );
-                    if (chatRoute) {
-                        const body = await readJsonBody(req);
-                        const summary = await setParticipantChatActive(
-                            chatRoute.roomCode.toUpperCase(),
-                            chatRoute.participantId,
-                            Boolean(body.active)
-                        );
-
-                        if (!summary) {
-                            sendJson(res, 404, {
-                                error: "Room not found or participant is not part of it.",
-                            });
-                            return;
-                        }
-
-                        sendJson(res, 200, summary as unknown as Record<string, unknown>);
-                        return;
-                    }
-
-                    sendJson(res, 404, { error: "Room endpoint not found." });
-                } catch (error) {
-                    const err = error as Error;
-                    emit("room:error", {
-                        error: err.message,
-                        method: req.method,
-                        path: url.pathname,
-                    });
-                    sendJson(res, 400, { error: err.message || "Invalid room request." });
-                }
-                return;
-            }
-
-            // UploadThing endpoint
-            if (url.pathname.startsWith("/api/uploadthing")) {
-                return handleUploadThingRequest(req, res);
-            }
-
-            // Email Request Endpoint
-            if (req.method === "OPTIONS" && url.pathname === "/request-email") {
-                setEmailCors(res, req);
-                res.writeHead(204);
-                res.end();
-                return;
-            }
-
-            if (req.method === "POST" && url.pathname === "/request-email") {
-                setEmailCors(res, req);
-                let body = "";
-                req.on("data", (chunk: Buffer) => {
-                    body += chunk.toString();
-                });
-                req.on("end", () => {
-                    try {
-                        const reqWithBody = req as IncomingMessageWithBody;
-                        reqWithBody.body = JSON.parse(body);
-                        handleRequestEmail(reqWithBody, res);
-                    } catch (e) {
-                        res.writeHead(400, { "Content-Type": "application/json" });
-                        res.end(JSON.stringify({ error: "Invalid JSON" }));
-                    }
-                });
-                return;
-            }
-
-            // TURN Server Credentials Endpoint
-            if (
-                req.method === "OPTIONS" &&
-                url.pathname === "/api/turn-credentials"
-            ) {
-                setTurnCors(res, req);
-                res.writeHead(204);
-                res.end();
-                return;
-            }
-
-            if (req.method === "GET" && url.pathname === "/api/turn-credentials") {
-                setTurnCors(res, req);
-
-                if (
-                    !config.CLOUDFLARE_TURN_TOKEN_ID ||
-                    !config.CLOUDFLARE_API_TOKEN
-                ) {
-                    emit("turn:error", {
-                        message: "TURN credentials request failed: Not configured",
-                    });
-                    res.writeHead(501, { "Content-Type": "application/json" });
-                    res.end(
-                        JSON.stringify({
-                            error: "TURN service is not configured on the server.",
-                        })
-                    );
-                    return;
-                }
-
-                try {
-                    const cloudflareUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${config.CLOUDFLARE_TURN_TOKEN_ID}/credentials/generate-ice-servers`;
-
-                    const response = await fetch(cloudflareUrl, {
-                        method: "POST",
-                        headers: {
-                            Authorization: `Bearer ${config.CLOUDFLARE_API_TOKEN}`,
-                            "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({ ttl: 3600 }),
-                    });
-
-                    if (!response.ok) {
-                        const errorBody = await response.text();
-                        emit("turn:error", {
-                            context: "Cloudflare API Error",
-                            status: response.status,
-                            body: errorBody,
-                        });
-                        throw new Error(
-                            `Cloudflare API responded with status ${response.status}`
-                        );
-                    }
-
-                    const data = (await response.json()) as {
-                        iceServers?: unknown[];
-                    };
-                    emit("turn:credentials_issued", {
-                        clientIp: clientIp,
-                    });
-
-                    if (
-                        !data.iceServers ||
-                        !Array.isArray(data.iceServers) ||
-                        data.iceServers.length === 0
-                    ) {
-                        emit("turn:error", {
-                            context: "Invalid Cloudflare Response",
-                            responseData: data,
-                        });
-                        throw new Error("Invalid response format from Cloudflare");
-                    }
-
-                    res.writeHead(200, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify(data));
-                } catch (error) {
-                    const err = error as Error;
-                    emit("turn:error", {
-                        context: "Fetch Loop",
-                        error: err.message,
-                    });
-                    res.writeHead(500, { "Content-Type": "application/json" });
-                    res.end(
-                        JSON.stringify({
-                            error: "Could not fetch TURN credentials.",
-                        })
-                    );
-                }
-                return;
-            }
-
-            // Favicon
-            if (url.pathname === "/favicon.ico") {
-                const faviconPath = path.join(
-                    __dirname,
-                    "..",
-                    "public",
-                    "favicon.ico"
-                );
-                fs.readFile(faviconPath, (err, data) => {
-                    if (err) {
-                        // Ignored in logs usually
-                        res.writeHead(404);
-                        res.end();
-                        return;
-                    }
-                    res.writeHead(200, { "Content-Type": "image/x-icon" });
-                    res.end(data);
-                });
-                return;
-            }
-
-            // Status API endpoint (for the status page)
-            if (url.pathname === "/api/status") {
-                setRoomCors(res, req);
-
-                if (req.method === "OPTIONS") {
-                    res.writeHead(204);
-                    res.end();
-                    return;
-                }
-
-                if (req.method === "GET") {
-                    const uptimeSeconds = process.uptime();
-                    const mem = process.memoryUsage();
-                    const status = {
-                        status: "operational",
-                        version: process.env.npm_package_version || "unknown",
-                        uptime: uptimeSeconds,
-                        uptimeFormatted: formatUptime(uptimeSeconds),
-                        timestamp: new Date().toISOString(),
-                        services: {
-                            websocket: {
-                                status: "operational",
-                                activeConnections: state.clients.size,
-                            },
-                            signaling: {
-                                status: "operational",
-                                activeFlights: Object.keys(state.flights).length,
-                            },
-                            turn: {
-                                status:
-                                    config.CLOUDFLARE_TURN_TOKEN_ID &&
-                                    config.CLOUDFLARE_API_TOKEN
-                                        ? "operational"
-                                        : "not_configured",
-                            },
-                        },
-                        stats: {
-                            totalConnections:
-                                state.connectionStats.totalConnections,
-                            totalDisconnections:
-                                state.connectionStats.totalDisconnections,
-                            totalFlightsCreated:
-                                state.connectionStats.totalFlightsCreated,
-                            totalFlightsJoined:
-                                state.connectionStats.totalFlightsJoined,
-                        },
-                        memory: {
-                            heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
-                            heapTotalMB: Math.round(
-                                mem.heapTotal / 1024 / 1024
-                            ),
-                            rssMB: Math.round(mem.rss / 1024 / 1024),
-                        },
-                    };
-                    res.writeHead(200, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify(status));
-                    return;
-                }
-            }
-
-            // Health check & Stats
-            if (req.method === "GET" && url.pathname === "/") {
-                res.writeHead(200, { "Content-Type": "text/plain" });
-                res.end("Server is alive and waiting for WebSocket connections.");
-                // Optional: eventBus.emit(EVENTS.HTTP.REQUEST, { path: '/' });
-            } else if (req.method === "GET" && url.pathname === "/keep-alive") {
-                res.writeHead(200, { "Content-Type": "text/plain" });
-                res.end("OK");
-            } else if (req.method === "GET" && url.pathname === "/stats") {
-                const stats = {
-                    activeConnections: state.clients.size,
-                    activeFlights: Object.keys(state.flights).length,
-                    uptime: process.uptime(),
-                    memory: process.memoryUsage(),
-                    timestamp: new Date().toISOString(),
-                };
-                res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify(stats, null, 2));
-            } else {
-                res.writeHead(404, { "Content-Type": "text/plain" });
-                res.end("Not Found");
-            }
+            const params = c.req.valid("param");
+            const body = c.req.valid("json");
+            return c.json(await joinRoom(params.roomCode, body.name));
         } catch (error) {
-            const err = error as Error;
-            emit("http:error", {
-                context: "Global Request Handler",
-                error: err.message,
-                url: req.url,
-            });
-            if (!res.headersSent) {
-                res.writeHead(500, { "Content-Type": "text/plain" });
-            }
-            res.end("Internal Server Error");
+            return roomRequestError(c, error);
         }
     }
 );
+rooms.post(
+    "/:roomCode/participants/:participantId/ready",
+    zValidator("param", roomParticipantParamSchema),
+    zValidator("json", participantReadyBodySchema),
+    async (c) => {
+        try {
+            const params = c.req.valid("param");
+            const body = c.req.valid("json");
+            const summary = await markParticipantReady(
+                params.roomCode,
+                params.participantId,
+                body
+            );
+            return summary ? c.json(summary) : roomNotFound(c);
+        } catch (error) {
+            return roomRequestError(c, error);
+        }
+    }
+);
+rooms.post(
+    "/:roomCode/participants/:participantId/screen-share",
+    zValidator("param", roomParticipantParamSchema),
+    zValidator("json", participantToggleBodySchema),
+    async (c) => {
+        try {
+            const params = c.req.valid("param");
+            const body = c.req.valid("json");
+            const summary = await setParticipantScreenShare(
+                params.roomCode,
+                params.participantId,
+                body.active
+            );
+            return summary ? c.json(summary) : roomNotFound(c);
+        } catch (error) {
+            return roomRequestError(c, error);
+        }
+    }
+);
+rooms.post(
+    "/:roomCode/participants/:participantId/chat",
+    zValidator("param", roomParticipantParamSchema),
+    zValidator("json", participantToggleBodySchema),
+    async (c) => {
+        try {
+            const params = c.req.valid("param");
+            const body = c.req.valid("json");
+            const summary = await setParticipantChatActive(
+                params.roomCode,
+                params.participantId,
+                body.active
+            );
+            return summary ? c.json(summary) : roomNotFound(c);
+        } catch (error) {
+            return roomRequestError(c, error);
+        }
+    }
+);
+rooms.all("*", (c) => c.json({ error: "Room endpoint not found." }, 404));
+
+app.route("/api/rooms", rooms);
+
+app.use("/api/turn-credentials", turnCors);
+app.use("/request-email", emailCors);
+app.use("/api/uploadthing", uploadCors);
+app.use("/api/uploadthing/*", uploadCors);
+app.use("/api/status", roomCors);
+
+app.all("/api/uploadthing", (c) => handleUploadThingWebRequest(c.req.raw));
+app.all("/api/uploadthing/*", (c) => handleUploadThingWebRequest(c.req.raw));
+
+app.post("/request-email", zValidator("json", requestEmailBodySchema), async (c) =>
+    getRequestEmailResponse(c.req.valid("json"))
+);
+
+app.get("/api/turn-credentials", async (c) => {
+    if (!config.CLOUDFLARE_TURN_TOKEN_ID || !config.CLOUDFLARE_API_TOKEN) {
+        emit("turn:error", {
+            message: "TURN credentials request failed: Not configured",
+        });
+        return c.json(
+            { error: "TURN service is not configured on the server." },
+            501
+        );
+    }
+
+    try {
+        const response = await fetch(
+            `https://rtc.live.cloudflare.com/v1/turn/keys/${config.CLOUDFLARE_TURN_TOKEN_ID}/credentials/generate-ice-servers`,
+            {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${config.CLOUDFLARE_API_TOKEN}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ ttl: 3600 }),
+            }
+        );
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            emit("turn:error", {
+                context: "Cloudflare API Error",
+                status: response.status,
+                body: errorBody,
+            });
+            throw new Error(
+                `Cloudflare API responded with status ${response.status}`
+            );
+        }
+
+        const data = (await response.json()) as { iceServers?: unknown[] };
+        emit("turn:credentials_issued", {
+            clientIp: getClientIp(c.env.incoming),
+        });
+
+        if (!Array.isArray(data.iceServers) || data.iceServers.length === 0) {
+            emit("turn:error", {
+                context: "Invalid Cloudflare Response",
+                responseData: data,
+            });
+            throw new Error("Invalid response format from Cloudflare");
+        }
+
+        return c.json(data);
+    } catch (error) {
+        emit("turn:error", {
+            context: "Fetch Loop",
+            error: (error as Error).message,
+        });
+        return c.json({ error: "Could not fetch TURN credentials." }, 500);
+    }
+});
+
+app.get("/favicon.ico", async (c) => {
+    try {
+        return new Response(
+            await fs.readFile(path.join(__dirname, "..", "public", "favicon.ico")),
+            {
+                headers: { "Content-Type": "image/x-icon" },
+                status: 200,
+            }
+        );
+    } catch {
+        return c.body(null, 404);
+    }
+});
+
+app.get("/api/status", (c) => {
+    const uptimeSeconds = process.uptime();
+    const memory = process.memoryUsage();
+
+    return c.json({
+        memory: {
+            heapTotalMB: Math.round(memory.heapTotal / 1024 / 1024),
+            heapUsedMB: Math.round(memory.heapUsed / 1024 / 1024),
+            rssMB: Math.round(memory.rss / 1024 / 1024),
+        },
+        services: {
+            signaling: {
+                activeFlights: Object.keys(state.flights).length,
+                status: "operational",
+            },
+            turn: {
+                status:
+                    config.CLOUDFLARE_TURN_TOKEN_ID && config.CLOUDFLARE_API_TOKEN
+                        ? "operational"
+                        : "not_configured",
+            },
+            websocket: {
+                activeConnections: state.clients.size,
+                status: "operational",
+            },
+        },
+        stats: {
+            totalConnections: state.connectionStats.totalConnections,
+            totalDisconnections: state.connectionStats.totalDisconnections,
+            totalFlightsCreated: state.connectionStats.totalFlightsCreated,
+            totalFlightsJoined: state.connectionStats.totalFlightsJoined,
+        },
+        status: "operational",
+        timestamp: new Date().toISOString(),
+        uptime: uptimeSeconds,
+        uptimeFormatted: formatUptime(uptimeSeconds),
+        version: process.env.npm_package_version || "unknown",
+    });
+});
+
+app.get("/", (c) =>
+    c.text("Server is alive and waiting for WebSocket connections.")
+);
+app.get("/keep-alive", (c) => c.text("OK"));
+app.get("/stats", (c) =>
+    c.json({
+        activeConnections: state.clients.size,
+        activeFlights: Object.keys(state.flights).length,
+        memory: process.memoryUsage(),
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+    })
+);
+
+export const server = createAdaptorServer({
+    fetch: app.fetch,
+    autoCleanupIncoming: true,
+    overrideGlobalObjects: false,
+}) as http.Server;
 
 server.on("error", (error: NodeJS.ErrnoException) => {
     emit("http:error", {

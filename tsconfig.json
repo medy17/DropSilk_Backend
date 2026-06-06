@@ -15,7 +15,12 @@
         "declaration": true,
         "declarationMap": true,
         "sourceMap": true,
-        "moduleResolution": "node"
+        "moduleResolution": "node",
+        "types": [
+            "bun-types",
+            "node"
+        ],
+        "ignoreDeprecations": "6.0"
     },
     "include": [
         "src/**/*",

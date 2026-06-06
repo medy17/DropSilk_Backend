@@ -1,6 +1,4 @@
 // --- tests/uploadthing.test.js ---
-const httpMocks = require("node-mocks-http");
-
 // Polyfills
 if (!global.Request) { global.Request = class Request { constructor(url, options) { this.url = url; this.method = options.method || 'GET'; this.headers = options.headers || new Headers(); this.body = options.body; } async arrayBuffer() { return Buffer.from(''); } }; }
 if (!global.Response) { global.Response = class Response { constructor(body, options) { this.status = options.status || 200; this.headers = new Headers(options.headers); this._body = body; } async arrayBuffer() { return Buffer.from(this._body || ''); } }; }
@@ -32,8 +30,11 @@ jest.mock("../src/gossamer", () => ({
 }));
 
 jest.mock("../src/config", () => ({
-    UPLOADTHING_TOKEN: "sk_live_mock_token_12345",
-    PORT: 3000,
+    __esModule: true,
+    default: {
+        UPLOADTHING_TOKEN: "sk_live_mock_token_12345",
+        PORT: 3000,
+    },
 }));
 jest.mock("../src/dbClient", () => ({
     isDatabaseInitialized: jest.fn(() => true),
@@ -41,7 +42,7 @@ jest.mock("../src/dbClient", () => ({
 }));
 
 // And finally, require the modules
-const { handleUploadThingRequest } = require("../src/uploadthingHandler");
+const { handleUploadThingWebRequest } = require("../src/uploadthingHandler");
 
 describe("UploadThing Handler", () => {
     beforeEach(() => {
@@ -50,25 +51,19 @@ describe("UploadThing Handler", () => {
         jest.resetModules();
         // Since modules are reset, we must re-require our file under test
         // This is a bit heavy, but guarantees a clean state for the handler
-        const { handleUploadThingRequest: newHandler } = require('../src/uploadthingHandler');
+        const { handleUploadThingWebRequest: newHandler } = require('../src/uploadthingHandler');
         onUploadCompleteCallback = null;
     });
 
     test("onUploadComplete should emit upload:success and upload:db_saved", async () => {
         // We need to re-require here because of jest.resetModules
-        const { handleUploadThingRequest } = require('../src/uploadthingHandler');
+        const { handleUploadThingWebRequest } = require('../src/uploadthingHandler');
         const { emit } = require("../src/gossamer");
 
-        const req = httpMocks.createRequest({
+        const req = new Request("http://localhost:3000/api/uploadthing", {
             method: "GET",
-            url: "/api/uploadthing",
-            headers: { host: "localhost:3000" },
         });
-        req[Symbol.asyncIterator] = async function* () {
-            yield Buffer.from("");
-        };
-        const res = httpMocks.createResponse();
-        await handleUploadThingRequest(req, res);
+        await handleUploadThingWebRequest(req);
 
         expect(onUploadCompleteCallback).toBeInstanceOf(Function);
 

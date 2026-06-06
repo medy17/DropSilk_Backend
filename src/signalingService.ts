@@ -1,82 +1,43 @@
-// --- src/signalingService.ts ---
-
 import WebSocket, { WebSocketServer } from "ws";
 import type { Server, IncomingMessage } from "http";
 import config from "./config";
 import * as state from "./state";
 import type { ClientMetadata, Flight } from "./state";
+import { generateFlightCode, generateSessionId } from "./ids";
 import { removeParticipantFromRoom, resolveRoomParticipant } from "./roomStore";
-import { getClientIp, isPrivateIP } from "./utils";
+import {
+    determineConnectionType,
+    getClientIp,
+    getNetworkGroup,
+    isAllowedOrigin,
+} from "./networking";
 import { emit } from "./gossamer";
+import {
+    AttachRoomMessage,
+    ClientMessage,
+    InviteToFlightMessage,
+    JoinFlightMessage,
+    RegisterDetailsMessage,
+    SignalMessage,
+    clientMessageSchema,
+    formatValidationIssues,
+} from "./validation";
 
 let wss: WebSocketServer | undefined;
 let healthInterval: NodeJS.Timeout | undefined;
 const screenShareFlights: Record<string, Flight> = {};
 const chatFlights: Record<string, Flight> = {};
+const knownMessageTypes = new Set([
+    "register-details",
+    "create-flight",
+    "join-flight",
+    "invite-to-flight",
+    "attach-room",
+    "signal",
+]);
 
-// --- Message Types ---
-interface RegisterDetailsMessage {
-    type: "register-details";
-    name: string;
-}
-
-interface CreateFlightMessage {
-    type: "create-flight";
-}
-
-interface JoinFlightMessage {
-    type: "join-flight";
-    flightCode: string;
-}
-
-interface InviteToFlightMessage {
-    type: "invite-to-flight";
-    inviteeId: string;
-    flightCode: string;
-}
-
-interface SignalMessage {
-    type: "signal";
-    data: unknown;
-}
-
-interface AttachRoomMessage {
-    type: "attach-room";
-    roomCode: string;
-    participantId: string;
-    channel?: "transfer" | "screen-share" | "chat";
-}
-
-type ClientMessage =
-    | RegisterDetailsMessage
-    | CreateFlightMessage
-    | JoinFlightMessage
-    | InviteToFlightMessage
-    | AttachRoomMessage
-    | SignalMessage
-    | { type: string };
-
-// --- Extended WebSocket with isAlive property ---
 interface ExtendedWebSocket extends WebSocket {
     isAlive: boolean;
-}
-
-function determineConnectionType(
-    creatorMeta: ClientMetadata,
-    joinerMeta: ClientMetadata
-): string {
-    if (creatorMeta.remoteIp === joinerMeta.remoteIp) {
-        return "lan";
-    }
-    if (
-        isPrivateIP(creatorMeta.remoteIp) &&
-        isPrivateIP(joinerMeta.remoteIp) &&
-        creatorMeta.remoteIp.split(".").slice(0, 3).join(".") ===
-            joinerMeta.remoteIp.split(".").slice(0, 3).join(".")
-    ) {
-        return "lan";
-    }
-    return "wan";
 }
 
 function getFlightRegistry(channel: ClientMetadata["channel"]): Record<string, Flight> {
@@ -94,20 +55,8 @@ async function attachDurableRoom(
     meta: ClientMetadata,
     data: AttachRoomMessage
 ): Promise<void> {
-    if (
-        !data.roomCode ||
-        typeof data.roomCode !== "string" ||
-        !data.participantId ||
-        typeof data.participantId !== "string"
-    ) {
-        ws.send(
-            JSON.stringify({ type: "error", message: "Invalid room attach payload" })
-        );
-        return;
-    }
-
     const roomParticipant = await resolveRoomParticipant(
-        data.roomCode.toUpperCase(),
+        data.roomCode,
         data.participantId
     );
 
@@ -119,12 +68,7 @@ async function attachDurableRoom(
     }
 
     const self = roomParticipant.self;
-    const channel =
-        data.channel === "screen-share"
-            ? "screen-share"
-            : data.channel === "chat"
-                ? "chat"
-                : "transfer";
+    const channel = data.channel ?? "transfer";
     meta.name = self.name;
     meta.flightCode = roomParticipant.roomCode;
     meta.participantId = self.participantId;
@@ -183,7 +127,10 @@ async function attachDurableRoom(
         return;
     }
 
-    const connectionType = determineConnectionType(hostMeta, guestMeta);
+    const connectionType = determineConnectionType(
+        hostMeta.remoteIp,
+        guestMeta.remoteIp
+    );
     existingFlight.establishedAt = existingFlight.establishedAt || Date.now();
 
     hostWs.send(
@@ -246,11 +193,7 @@ function verifyClient(
     const origin = info.req.headers.origin;
 
     if (config.NODE_ENV === "production") {
-        const isAllowed =
-            (origin && config.ALLOWED_ORIGINS.has(origin)) ||
-            (origin && config.VERCEL_PREVIEW_ORIGIN_REGEX.test(origin));
-
-        if (isAllowed) {
+        if (origin && isAllowedOrigin(origin)) {
             done(true);
         } else {
             emit("client:error", {
@@ -263,7 +206,7 @@ function verifyClient(
         return;
     }
 
-    if ((origin && config.ALLOWED_ORIGINS.has(origin)) || !origin) {
+    if ((origin && isAllowedOrigin(origin)) || !origin) {
         done(true);
     } else {
         emit("client:error", {
@@ -277,7 +220,7 @@ function verifyClient(
 
 function handleConnection(ws: WebSocket, req: IncomingMessage): void {
     const extWs = ws as ExtendedWebSocket;
-    const clientId = Math.random().toString(36).substr(2, 9);
+    const clientId = generateSessionId();
     const cleanRemoteIp = getClientIp(req);
 
     const metadata: ClientMetadata = {
@@ -295,7 +238,6 @@ function handleConnection(ws: WebSocket, req: IncomingMessage): void {
     state.clients.set(ws, metadata);
     state.connectionStats.totalConnections++;
 
-    // EMIT: Client Connected
     emit("client:connected", {
         clientId,
         ip: cleanRemoteIp,
@@ -324,10 +266,34 @@ function handleConnection(ws: WebSocket, req: IncomingMessage): void {
     );
 }
 
+function parseClientMessage(
+    message: WebSocket.RawData
+): { data: ClientMessage } | { error: string; issues?: string[] } {
+    const messageStr = message.toString();
+    const raw = JSON.parse(messageStr) as Record<string, unknown>;
+
+    if (typeof raw?.type !== "string") {
+        return { error: "Invalid message format" };
+    }
+
+    if (!knownMessageTypes.has(raw.type)) {
+        return { error: "Unknown message type" };
+    }
+
+    const result = clientMessageSchema.safeParse(raw);
+    if (!result.success) {
+        return {
+            error: "Invalid message payload",
+            issues: formatValidationIssues(result.error),
+        };
+    }
+
+    return { data: result.data };
+}
+
 async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise<void> {
     const meta = state.clients.get(ws);
     if (!meta) {
-        // Silently ignore or emit warn if desired
         return;
     }
 
@@ -345,8 +311,19 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
             );
             return;
         }
-        data = JSON.parse(messageStr) as ClientMessage;
-        if (!data.type) return;
+
+        const parsed = parseClientMessage(message);
+        if ("error" in parsed) {
+            emit("client:error", {
+                clientId: meta.id,
+                context: parsed.error,
+                issues: parsed.issues,
+            });
+            ws.send(JSON.stringify({ type: "error", message: parsed.error }));
+            return;
+        }
+
+        data = parsed.data;
     } catch (error) {
         const err = error as Error;
         emit("client:error", {
@@ -365,37 +342,21 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
 
     try {
         switch (data.type) {
-            case "attach-room": {
-                await attachDurableRoom(ws, meta, data as AttachRoomMessage);
+            case "attach-room":
+                await attachDurableRoom(ws, meta, data);
                 break;
-            }
 
-            case "register-details": {
-                const regData = data as RegisterDetailsMessage;
-                if (
-                    !regData.name ||
-                    typeof regData.name !== "string" ||
-                    regData.name.length > 50 ||
-                    regData.name.trim().length === 0
-                ) {
-                    ws.send(
-                        JSON.stringify({ type: "error", message: "Invalid name" })
-                    );
-                    return;
-                }
-                meta.name = regData.name.trim();
+            case "register-details":
+                meta.name = data.name;
                 state.clients.set(ws, meta);
-
-                // EMIT: Client Registered
                 emit("client:registered_details", {
                     clientId: meta.id,
                     newName: meta.name,
                 });
                 broadcastUsersOnSameNetwork();
                 break;
-            }
 
-            case "create-flight": {
+            case "create-flight":
                 if (meta.flightCode) {
                     ws.send(
                         JSON.stringify({
@@ -405,18 +366,18 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
                     );
                     return;
                 }
-                const flightCode = Math.random()
-                    .toString(36)
-                    .substr(2, 6)
-                    .toUpperCase();
+                let flightCode = generateFlightCode();
+                while (state.flights[flightCode]) {
+                    flightCode = generateFlightCode();
+                }
                 state.flights[flightCode] = {
                     members: [ws],
                     establishedAt: null,
                 };
                 meta.flightCode = flightCode;
+                meta.channel = "transfer";
                 state.connectionStats.totalFlightsCreated++;
 
-                // EMIT: Flight Created (This triggers the Flight Story)
                 emit("flight:created", {
                     flightCode,
                     creatorId: meta.id,
@@ -426,23 +387,9 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
                 ws.send(JSON.stringify({ type: "flight-created", flightCode }));
                 broadcastUsersOnSameNetwork();
                 break;
-            }
 
             case "join-flight": {
-                const joinData = data as JoinFlightMessage;
-                if (
-                    !joinData.flightCode ||
-                    typeof joinData.flightCode !== "string" ||
-                    joinData.flightCode.length !== 6
-                ) {
-                    ws.send(
-                        JSON.stringify({
-                            type: "error",
-                            message: "Invalid flight code",
-                        })
-                    );
-                    return;
-                }
+                const joinData: JoinFlightMessage = data;
                 if (meta.flightCode) {
                     ws.send(
                         JSON.stringify({
@@ -484,22 +431,22 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
                 }
 
                 const connectionType = determineConnectionType(
-                    creatorMeta,
-                    joinerMeta
+                    creatorMeta.remoteIp,
+                    joinerMeta.remoteIp
                 );
 
                 flight.members.push(ws);
                 flight.establishedAt = Date.now();
                 meta.flightCode = joinData.flightCode;
+                meta.channel = "transfer";
                 state.connectionStats.totalFlightsJoined++;
 
-                // EMIT: Peer Joined (Updates the Flight Story)
                 emit("flight:joined", {
                     flightCode: joinData.flightCode,
                     joinerId: meta.id,
                     joinerName: meta.name,
                     ip: meta.remoteIp,
-                    connectionType: connectionType,
+                    connectionType,
                 });
 
                 ws.send(
@@ -507,7 +454,7 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
                         type: "peer-joined",
                         flightCode: joinData.flightCode,
                         peer: { id: creatorMeta.id, name: creatorMeta.name },
-                        connectionType: connectionType,
+                        connectionType,
                     })
                 );
                 creatorWs.send(
@@ -515,7 +462,7 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
                         type: "peer-joined",
                         flightCode: joinData.flightCode,
                         peer: { id: meta.id, name: meta.name },
-                        connectionType: connectionType,
+                        connectionType,
                     })
                 );
 
@@ -524,8 +471,7 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
             }
 
             case "invite-to-flight": {
-                const inviteData = data as InviteToFlightMessage;
-                if (!inviteData.inviteeId || !inviteData.flightCode) return;
+                const inviteData: InviteToFlightMessage = data;
                 emit("flight:invitation", {
                     flightCode: inviteData.flightCode,
                     from: meta.id,
@@ -550,7 +496,7 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
             }
 
             case "signal": {
-                const signalData = data as SignalMessage;
+                const signalData: SignalMessage = data;
                 const flightRegistry = getFlightRegistry(meta.channel);
                 if (!meta.flightCode || !flightRegistry[meta.flightCode]) return;
 
@@ -570,21 +516,13 @@ async function handleMessage(ws: WebSocket, message: WebSocket.RawData): Promise
                 });
                 break;
             }
-
-            default:
-                ws.send(
-                    JSON.stringify({
-                        type: "error",
-                        message: "Unknown message type",
-                    })
-                );
         }
     } catch (error) {
         const err = error as Error;
         emit("client:error", {
             context: "Error in message switch",
             clientId: meta.id,
-            messageType: data?.type,
+            messageType: data.type,
             error: err.message,
         });
         if (ws.readyState === WebSocket.OPEN) {
@@ -619,11 +557,10 @@ async function handleDisconnect(ws: WebSocket): Promise<void> {
         }
     }
 
-    // EMIT: Disconnected
     emit("client:disconnected", {
         clientId: meta.id,
         remainingClients: state.clients.size,
-        flightCode: meta.flightCode, // Pass flight code if they were in one
+        flightCode: meta.flightCode,
     });
 
     const flightRegistry = getFlightRegistry(meta.channel);
@@ -660,14 +597,14 @@ function broadcastUsersOnSameNetwork(): void {
                 meta.flightCode &&
                 state.flights[meta.flightCode] &&
                 state.flights[meta.flightCode].members.length === 2
-            )
+            ) {
                 continue;
+            }
 
-            let groupingKey = isPrivateIP(meta.remoteIp)
-                ? meta.remoteIp.split(".").slice(0, 3).join(".")
-                : meta.remoteIp;
-            if (!clientsByNetworkGroup[groupingKey])
+            const groupingKey = getNetworkGroup(meta.remoteIp);
+            if (!clientsByNetworkGroup[groupingKey]) {
                 clientsByNetworkGroup[groupingKey] = [];
+            }
             clientsByNetworkGroup[groupingKey].push({
                 id: meta.id,
                 name: meta.name,
@@ -692,12 +629,10 @@ function broadcastUsersOnSameNetwork(): void {
                 continue;
             }
 
-            let groupingKey = isPrivateIP(meta.remoteIp)
-                ? meta.remoteIp.split(".").slice(0, 3).join(".")
-                : meta.remoteIp;
+            const groupingKey = getNetworkGroup(meta.remoteIp);
             const usersOnNetwork = clientsByNetworkGroup[groupingKey]
                 ? clientsByNetworkGroup[groupingKey].filter(
-                    (c) => c.id !== meta.id
+                    (client) => client.id !== meta.id
                 )
                 : [];
             ws.send(

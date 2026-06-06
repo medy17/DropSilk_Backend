@@ -1,9 +1,50 @@
-// --- src/dbClient.ts ---
+import {
+    ColumnType,
+    Generated,
+    Kysely,
+    PostgresDialect,
+    Transaction,
+} from "kysely";
+import { Pool, QueryResult, QueryResultRow } from "pg";
 
-import { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
-import config from "./config";
+export interface UploadedFilesTable {
+    id: Generated<number>;
+    file_key: string;
+    file_url: string;
+    file_name: string;
+    uploaded_at: ColumnType<Date, never, never>;
+}
+
+export interface RoomsTable {
+    room_code: string;
+    host_participant_id: string;
+    host_name: string;
+    guest_participant_id: string | null;
+    guest_name: string | null;
+    host_screen_share_active: boolean;
+    guest_screen_share_active: boolean;
+    host_chat_active: boolean;
+    guest_chat_active: boolean;
+    host_ready: boolean;
+    guest_ready: boolean;
+    host_file_count: number;
+    guest_file_count: number;
+    host_total_bytes: ColumnType<number | string, number, number>;
+    guest_total_bytes: ColumnType<number | string, number, number>;
+    created_at: ColumnType<Date, Date, never>;
+    updated_at: ColumnType<Date, Date, Date>;
+    expires_at: ColumnType<Date, Date, Date>;
+}
+
+export interface Database {
+    rooms: RoomsTable;
+    uploaded_files: UploadedFilesTable;
+}
+
+type DatabaseTransaction = Transaction<Database>;
 
 let pool: Pool | undefined;
+let db: Kysely<Database> | undefined;
 let dbInitialized = false;
 
 function shouldUseSsl(connectionString: string): false | { rejectUnauthorized: false } {
@@ -33,8 +74,11 @@ function shouldUseSsl(connectionString: string): false | { rejectUnauthorized: f
     return { rejectUnauthorized: false };
 }
 
-// Helper for early-stage logging (before Gossamer is initialized)
-const earlyLog = (level: string, message: string, meta: Record<string, unknown> = {}): void => {
+const earlyLog = (
+    level: string,
+    message: string,
+    meta: Record<string, unknown> = {}
+): void => {
     console.log(JSON.stringify({ level: level.toUpperCase(), message, ...meta }));
 };
 
@@ -45,22 +89,38 @@ if (process.env.DATABASE_URL) {
             connectionString,
             ssl: shouldUseSsl(connectionString),
         });
-        earlyLog("info", "🐘 Database connection pool created successfully.");
+        db = new Kysely<Database>({
+            dialect: new PostgresDialect({ pool }),
+        });
+        earlyLog("info", "Database pool and Kysely client created successfully.");
         dbInitialized = true;
     } catch (error) {
         const err = error as Error;
-        earlyLog("error", "🚨 Failed to create database connection pool", {
+        earlyLog("error", "Failed to initialize database clients", {
             error: err.message,
         });
         process.exit(1);
     }
 } else {
-    earlyLog("error", "🚨 DATABASE_URL is required.");
+    earlyLog("error", "DATABASE_URL is required.");
     process.exit(1);
 }
 
+function getPool(): Pool {
+    if (!pool) {
+        throw new Error("Database is not available.");
+    }
+    return pool;
+}
+
+export function getDb(): Kysely<Database> {
+    if (!db) {
+        throw new Error("Database is not available.");
+    }
+    return db;
+}
+
 export async function initializeDatabase(): Promise<void> {
-    // At this point, Gossamer should be initialized, so we can use emit
     const { emit } = await import("./gossamer");
 
     if (!dbInitialized) {
@@ -68,7 +128,7 @@ export async function initializeDatabase(): Promise<void> {
     }
 
     try {
-        const schemaCheck = await pool!.query<{
+        const schemaCheck = await getPool().query<{
             rooms_exists: string | null;
             uploaded_files_exists: string | null;
         }>(`
@@ -96,31 +156,13 @@ export function query<T extends QueryResultRow = QueryResultRow>(
     text: string,
     params?: unknown[]
 ): Promise<QueryResult<T>> {
-    if (!dbInitialized || !pool) {
-        throw new Error("Database is not available.");
-    }
-    return pool.query<T>(text, params);
+    return getPool().query<T>(text, params);
 }
 
 export async function withTransaction<T>(
-    callback: (client: PoolClient) => Promise<T>
+    callback: (transaction: DatabaseTransaction) => Promise<T>
 ): Promise<T> {
-    if (!dbInitialized || !pool) {
-        throw new Error("Database is not available.");
-    }
-
-    const client = await pool.connect();
-    try {
-        await client.query("BEGIN");
-        const result = await callback(client);
-        await client.query("COMMIT");
-        return result;
-    } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-    } finally {
-        client.release();
-    }
+    return getDb().transaction().execute(callback);
 }
 
 export function isDatabaseInitialized(): boolean {

@@ -2,8 +2,11 @@
 
 // Mock config to prevent loading side effects
 jest.mock('../src/config', () => ({
-    PORT: 8080,
-    SHUTDOWN_TIMEOUT: 5000,
+    __esModule: true,
+    default: {
+        PORT: 8080,
+        SHUTDOWN_TIMEOUT: 5000,
+    },
 }));
 
 // Mock gossamer to prevent initialization

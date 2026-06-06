@@ -9,12 +9,15 @@ jest.mock("../src/gossamer", () => ({
 }));
 
 jest.mock("../src/config", () => ({
-    PORT: 0,
-    MAX_PAYLOAD: 1024,
-    HEALTH_CHECK_INTERVAL: 1000,
-    NODE_ENV: "test",
-    ALLOWED_ORIGINS: new Set(),
-    VERCEL_PREVIEW_ORIGIN_REGEX: /.*/,
+    __esModule: true,
+    default: {
+        PORT: 0,
+        MAX_PAYLOAD: 1024,
+        HEALTH_CHECK_INTERVAL: 1000,
+        NODE_ENV: "test",
+        ALLOWED_ORIGINS: new Set(),
+        VERCEL_PREVIEW_ORIGIN_REGEX: /.*/,
+    },
 }));
 
 jest.mock("../src/uploadthingHandler", () => ({

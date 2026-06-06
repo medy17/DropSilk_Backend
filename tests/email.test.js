@@ -1,6 +1,4 @@
 // --- tests/email.test.js ---
-const httpMocks = require("node-mocks-http");
-
 // Mock axios with explicit default export structure for ESM interop
 jest.mock("axios", () => ({
     __esModule: true,
@@ -25,7 +23,7 @@ jest.mock("../src/gossamer", () => ({
     emit: mockEmit,
 }));
 
-const { handleRequestEmail } = require("../src/emailService");
+const { getRequestEmailResponse } = require("../src/emailService");
 
 describe("Email Service", () => {
     beforeEach(() => {
@@ -33,32 +31,18 @@ describe("Email Service", () => {
     });
 
     test("Should return 400 if token is missing", async () => {
-        const req = httpMocks.createRequest({
-            method: "POST",
-            url: "/request-email",
-            body: {},
-        });
-        const res = httpMocks.createResponse();
+        const res = await getRequestEmailResponse({ token: "" });
 
-        await handleRequestEmail(req, res);
-
-        expect(res.statusCode).toBe(400);
-        expect(JSON.parse(res._getData())).toEqual({
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({
             error: "reCAPTCHA token is required",
         });
     });
 
     test("Should emit email:request event when validating", async () => {
-        const req = httpMocks.createRequest({
-            method: "POST",
-            url: "/request-email",
-            body: { token: "any-token" },
-        });
-        const res = httpMocks.createResponse();
-
         axios.post.mockResolvedValue({ data: { success: false } });
 
-        await handleRequestEmail(req, res);
+        await getRequestEmailResponse({ token: "any-token" });
 
         expect(mockEmit).toHaveBeenCalledWith("email:request", {
             status: "validating",
@@ -66,38 +50,24 @@ describe("Email Service", () => {
     });
 
     test("Should return 200 and email if reCAPTCHA succeeds", async () => {
-        const req = httpMocks.createRequest({
-            method: "POST",
-            url: "/request-email",
-            body: { token: "valid-token" },
-        });
-        const res = httpMocks.createResponse();
-
         axios.post.mockResolvedValue({ data: { success: true } });
 
-        await handleRequestEmail(req, res);
+        const res = await getRequestEmailResponse({ token: "valid-token" });
 
-        expect(res.statusCode).toBe(200);
-        expect(JSON.parse(res._getData())).toEqual({
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({
             email: "admin@example.com",
         });
     });
 
     test("Should emit email:error and return 500 if Google API errors out", async () => {
-        const req = httpMocks.createRequest({
-            method: "POST",
-            url: "/request-email",
-            body: { token: "valid-token" },
-        });
-        const res = httpMocks.createResponse();
-
         const apiError = new Error("Network Error");
         axios.post.mockRejectedValue(apiError);
 
-        await handleRequestEmail(req, res);
+        const res = await getRequestEmailResponse({ token: "valid-token" });
 
-        expect(res.statusCode).toBe(500);
-        expect(JSON.parse(res._getData())).toEqual({ error: "internal_error" });
+        expect(res.status).toBe(500);
+        expect(await res.json()).toEqual({ error: "internal_error" });
 
         // Verify that the correct telemetry event was emitted
         expect(mockEmit).toHaveBeenCalledWith("email:error", {
@@ -111,17 +81,10 @@ describe("Email Service", () => {
         const config = require("../src/config").default;
         config.contactEmail = ""; // Temporarily unset for this test
 
-        const req = httpMocks.createRequest({
-            method: "POST",
-            url: "/request-email",
-            body: { token: "valid-token" },
-        });
-        const res = httpMocks.createResponse();
-
         axios.post.mockResolvedValue({ data: { success: true } });
-        await handleRequestEmail(req, res);
+        const res = await getRequestEmailResponse({ token: "valid-token" });
 
-        expect(res.statusCode).toBe(500);
+        expect(res.status).toBe(500);
         expect(mockEmit).toHaveBeenCalledWith("email:error", {
             error: "server_not_configured",
         });
